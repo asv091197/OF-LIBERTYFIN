@@ -8,9 +8,9 @@ if (empty($_SESSION['lf_token'])) $_SESSION['lf_token'] = bin2hex(random_bytes(1
 $token   = $_SESSION['lf_token'];
 $esAdmin = ($_SESSION['usuario_rol'] ?? '') === 'admin';
 $e = $editando;
-$qs = function (array $x = []) use ($desde,$hasta,$cat,$buscar) {
+$qs = function (array $x = []) use ($desde,$hasta,$cat,$buscar,$soloPeriodo) {
     return '?' . http_build_query(array_merge(
-        ['desde'=>$desde,'hasta'=>$hasta,'cat'=>$cat,'q'=>$buscar], $x)); };
+        ['desde'=>$desde,'hasta'=>$hasta,'cat'=>$cat,'q'=>$buscar] + ($soloPeriodo ? ['periodo'=>1] : []), $x)); };
 $totCat = 0; foreach ($categorias as $c) $totCat += (float)$c['monto'];
 ?>
 
@@ -146,8 +146,14 @@ $totCat = 0; foreach ($categorias as $c) $totCat += (float)$c['monto'];
       <option value="<?= P::e($c) ?>" <?= $cat===$c?'selected':'' ?>><?= P::e($c) ?></option>
     <?php endforeach; ?>
   </select>
+  <label class="lf-solo" title="Con una búsqueda se mira todo el historial; márcalo para limitarla a las fechas de arriba">
+    <input type="checkbox" name="periodo" value="1" <?= $soloPeriodo ? 'checked' : '' ?>> Solo este periodo</label>
   <button class="btn btn-secondary btn-sm" type="submit">Filtrar</button>
 </form>
+<?php if ($todo): ?>
+  <p class="lf-nota-busqueda">Buscando «<?= P::e($buscar) ?>» en <b>todo el historial</b>,
+    sin importar las fechas. Marca <b>Solo este periodo</b> para acotarla.</p>
+<?php endif; ?>
 <?php endif; ?>
 
 <?php if ($vista === 'proveedores'):

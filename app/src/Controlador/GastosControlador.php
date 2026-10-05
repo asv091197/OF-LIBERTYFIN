@@ -22,16 +22,21 @@ final class GastosControlador
         $vista  = Peticion::opcion('t', ['generales','operacion','proveedores'], 'generales');
         $pagina = max(1, Peticion::entero('p', 1));
         $porPag = Peticion::POR_PAGINA;
-        $totalG = $vista === 'generales' ? $repo->cuantos($desde, $hasta, $cat, $buscar) : 0;
+        // Al buscar, el listado mira todo el historial y no solo el periodo.
+        $todo = $vista === 'generales' && Fechas::buscandoTodo($buscar);
+        list($d1, $h1) = $todo ? Fechas::rango($buscar, $desde, $hasta) : [$desde, $hasta];
+        $totalG = $vista === 'generales' ? $repo->cuantos($d1, $h1, $cat, $buscar) : 0;
 
         Plantilla::pagina('gastos/index', [
             'titulo'    => 'Gastos',
             'icono'     => 'baja',
-            'subtitulo' => Fechas::rotulo($desde, $hasta),
+            'subtitulo' => $todo ? 'Búsqueda en todo el historial' : Fechas::rotulo($desde, $hasta),
+            'todo'      => $todo,
+            'soloPeriodo' => Peticion::texto('periodo') === '1',
             'resumen'   => $repo->resumen($desde, $hasta),
             'vista'     => $vista,
             'gastos'    => $vista === 'generales'
-                         ? $repo->listado($desde, $hasta, $cat, $buscar, $porPag, ($pagina-1)*$porPag) : [],
+                         ? $repo->listado($d1, $h1, $cat, $buscar, $porPag, ($pagina-1)*$porPag) : [],
             'pagina'    => $pagina,
             'paginas'   => max(1, (int)ceil($totalG / $porPag)),
             'totalG'    => $totalG,

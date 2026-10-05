@@ -19,15 +19,20 @@ final class ClientesControlador
         $pagina = max(1, Peticion::entero('p', 1));
         $porPag = Peticion::POR_PAGINA;
 
-        $total = $repo->cuantos($desde, $hasta, $buscar);
+        // Al buscar, la lista mira todo el historial y no solo el periodo.
+        $todo = Fechas::buscandoTodo($buscar);
+        list($d1, $h1) = Fechas::rango($buscar, $desde, $hasta);
+        $total = $repo->cuantos($d1, $h1, $buscar);
         $editar = Peticion::entero('editar');
 
         Plantilla::pagina('clientes/index', [
             'titulo'     => 'Clientes',
             'icono'      => 'cliente',
-            'subtitulo'  => Fechas::rotulo($desde, $hasta) . ' · ' . number_format($total) . ' con actividad',
+            'subtitulo'  => ($todo ? 'Búsqueda en todo el historial' : Fechas::rotulo($desde, $hasta)) . ' · ' . number_format($total) . ($todo ? ' encontrados' : ' con actividad'),
+            'todo'       => $todo,
+            'soloPeriodo' => Peticion::texto('periodo') === '1',
             'resumen'    => $repo->resumen($desde, $hasta),
-            'clientes'   => $repo->listado($desde, $hasta, $buscar, $porPag, ($pagina-1)*$porPag),
+            'clientes'   => $repo->listado($d1, $h1, $buscar, $porPag, ($pagina-1)*$porPag),
             'top'        => $repo->masFacturan($desde, $hasta, 5),
             'antiguedad' => $repo->antiguedad(),
             'areas'      => $repo->areasUsadas(),

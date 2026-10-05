@@ -39,16 +39,23 @@ final class VentasControlador
         $porPag  = Peticion::POR_PAGINA;
         $desfase = ($pagina - 1) * $porPag;
 
-        $resumen = $repo->resumen($desde, $hasta, $filtros);
-        $ventas  = $repo->listado($desde, $hasta, $filtros, $porPag, $desfase);
-        $total   = $repo->cuantas($desde, $hasta, $filtros);
+        // Al buscar se mira todo el historial, no solo el periodo del filtro.
+        $todo = Fechas::buscandoTodo($filtros['buscar']);
+        list($d1, $h1) = Fechas::rango($filtros['buscar'], $desde, $hasta);
+
+        $resumen = $repo->resumen($d1, $h1, $filtros);
+        $ventas  = $repo->listado($d1, $h1, $filtros, $porPag, $desfase);
+        $total   = $repo->cuantas($d1, $h1, $filtros);
         $saldos  = $repo->saldosAbiertos(5);
         $meses   = $repo->cobradoPorMes(6);
 
         Plantilla::pagina('ventas/index', [
             'titulo'   => 'Ventas',
             'icono'    => 'venta',
-            'subtitulo'=> Fechas::rotulo($desde, $hasta) . ' · ' . number_format($total) . ' ventas',
+            'subtitulo'=> ($todo ? 'Búsqueda en todo el historial' : Fechas::rotulo($desde, $hasta))
+                          . ' · ' . number_format($total) . ' ventas',
+            'todo'     => $todo,
+            'soloPeriodo' => Peticion::texto('periodo') === '1',
             'resumen'  => $resumen,
             'ventas'   => $ventas,
             'saldos'   => $saldos,

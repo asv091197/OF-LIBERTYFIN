@@ -7,9 +7,10 @@ $cobrado = (float)($resumen['cobrado'] ?? 0);
 $vendido = (float)($resumen['vendido'] ?? 0);
 $saldo   = (float)($resumen['saldo']   ?? 0);
 $avance  = D::pct($cobrado, $vendido);
-$qs = function (array $extra = []) use ($desde, $hasta, $filtros) {
+$qs = function (array $extra = []) use ($desde, $hasta, $filtros, $soloPeriodo) {
     return '?' . http_build_query(array_merge(
-        ['desde'=>$desde,'hasta'=>$hasta,'estado'=>$filtros['estado'],'q'=>$filtros['buscar']], $extra));
+        ['desde'=>$desde,'hasta'=>$hasta,'estado'=>$filtros['estado'],'q'=>$filtros['buscar']]
+        + ($soloPeriodo ? ['periodo'=>1] : []), $extra));
 };
 ?>
 
@@ -26,8 +27,14 @@ $qs = function (array $extra = []) use ($desde, $hasta, $filtros) {
       <option value="<?= $k ?>" <?= $filtros['estado']===$k?'selected':'' ?>><?= $v ?></option>
     <?php endforeach; ?>
   </select>
+  <label class="lf-solo" title="Con una búsqueda se mira todo el historial; márcalo para limitarla a las fechas de arriba">
+    <input type="checkbox" name="periodo" value="1" <?= $soloPeriodo ? 'checked' : '' ?>> Solo este periodo</label>
   <button class="btn btn-secondary btn-sm" type="submit">Filtrar</button>
 </form>
+<?php if ($todo): ?>
+  <p class="lf-nota-busqueda">Buscando «<?= P::e($filtros['buscar']) ?>» en <b>todo el historial</b>,
+    sin importar las fechas. Marca <b>Solo este periodo</b> para acotarla.</p>
+<?php endif; ?>
 
 <div class="lf-stats">
   <?php
