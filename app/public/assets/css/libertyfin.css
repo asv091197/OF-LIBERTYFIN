@@ -2634,3 +2634,21 @@ tr[data-modal],a[data-modal]{cursor:pointer}
   .lf-serv{height:204px}
   .lf-serv .e,.lf-serv .e[style*="background-image"]{flex-basis:80px;height:80px}
 }
+
+/* CAJA · LA IMAGEN ESCALA CON LA TARJETA
+   Con una altura fija en píxeles, en móvil la tarjeta es ancha y la foto
+   quedaba como una tira recortada. Ahora la zona de imagen mantiene una
+   proporción 4:3 y crece con el ancho de la tarjeta, en cualquier
+   pantalla. Todas las tarjetas siguen midiendo igual porque comparten
+   ancho, proporción y tres renglones de nombre. */
+.lf-serv{height:auto}
+.lf-serv .e,
+.lf-serv .e[style*="background-image"]{
+  flex:0 0 auto;height:auto;aspect-ratio:4 / 3;
+  background-size:cover;background-position:center}
+.lf-grid-serv{grid-auto-rows:1fr}
+@media(max-width:560px){
+  .lf-grid-serv{grid-template-columns:repeat(2,minmax(0,1fr));gap:10px;padding:0 14px 16px}
+  .lf-serv{height:auto}
+  .lf-serv .e,.lf-serv .e[style*="background-image"]{flex-basis:auto;height:auto}
+}
