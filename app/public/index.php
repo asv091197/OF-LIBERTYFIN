@@ -351,6 +351,36 @@ if (!empty($_SESSION['empresa_db'])) {
     catch (\Throwable $e) { /* sin bitácora se opera igual */ }
 }
 
+// ── Suscripción vencida: lo único que se puede hacer es pagar ──
+//
+// Antes, una suscripción vencida impedía iniciar sesión, y quien tenía que
+// pagarla se quedaba afuera sin saber cómo. Ahora entra, pero solo ve
+// Mi cuenta → Plan (y salir). Quien no puede pagar —un cajero— ve un aviso
+// para que le pida al administrador renovar.
+//
+// Se evalúa en cada petición, no solo al entrar: una sesión que ya estaba
+// abierta cuando venció también queda detenida, y en cuanto se aprueba el
+// pago el acceso regresa solo (ver Suscripcion::estado).
+if (!in_array($ruta, $publicas, true) && !empty($_SESSION['empresa_id'])
+    && \LibertyFin\Servicio\Suscripcion::vencida()) {
+    $libres = ['/salir', '/cuenta/plan', '/cuenta/plan/comprobante'];
+    $enPlan = ($ruta === '/cuenta' && ($_GET['t'] ?? '') === 'plan');
+    if (!in_array($ruta, $libres, true) && !$enPlan) {
+        $susc = \LibertyFin\Servicio\Suscripcion::estado();
+        if (\LibertyFin\Dominio\Permisos::puede('editar.empresa')) {
+            $_SESSION['lf_aviso'] = ['tipo' => 'error', 'texto' =>
+                'Tu suscripción venció el ' . $susc['fecha'] . '. Renueva tu plan para seguir usando LibertyFin.'];
+            header('Location: /cuenta?t=plan'); exit;
+        }
+        http_response_code(402);
+        Plantilla::pagina('errores/vencida', [
+            'titulo' => 'Suscripción vencida', 'fecha' => $susc['fecha'],
+            'empresa' => $_SESSION['empresa_nombre'] ?? '',
+        ], 'layout-limpio');
+        exit;
+    }
+}
+
 // ── El permiso, antes de ejecutar nada ──
 if ($hallazgo !== null && !in_array($ruta, $publicas, true)) {
     $patron = $hallazgo['patron'] ?? $ruta;

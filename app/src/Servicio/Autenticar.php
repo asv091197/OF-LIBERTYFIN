@@ -95,11 +95,10 @@ final class Autenticar
         if (!$empresa['activo']) {
             throw new \RuntimeException('La cuenta de ' . $empresa['nombre_empresa'] . ' está inactiva.');
         }
-        if (!empty($empresa['fecha_vencimiento'])
-            && strtotime($empresa['fecha_vencimiento']) < strtotime('today')) {
-            throw new \RuntimeException('La suscripción de ' . $empresa['nombre_empresa']
-                . ' venció el ' . date('d/m/Y', strtotime($empresa['fecha_vencimiento'])) . '.');
-        }
+        // Una suscripción vencida YA NO impide entrar: antes la persona
+        // se quedaba afuera sin forma de pagar, justo cuando más lo
+        // necesitaba. Entra, pero el portero (public/index.php) la deja
+        // solo en Mi cuenta → Plan, o en un aviso si no puede pagar.
 
         $sucursal = $this->repo->sucursal($empresa['nombre_base_datos'], $usuario['sucursal_id']);
 
