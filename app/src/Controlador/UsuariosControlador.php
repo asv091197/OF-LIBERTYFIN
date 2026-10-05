@@ -5,6 +5,7 @@ use LibertyFin\Datos\ConfigRepo;
 use LibertyFin\Datos\Conexion;
 use LibertyFin\Datos\CuentaRepo;
 use LibertyFin\Datos\EmpresaRepo;
+use LibertyFin\Datos\PlanRepo;
 use LibertyFin\Datos\UsuarioRepo;
 use LibertyFin\Http\Peticion;
 use LibertyFin\Servicio\Autenticar;
@@ -147,6 +148,7 @@ final class UsuariosControlador
             'aviso'     => $_SESSION['lf_aviso'] ?? null,
             'empresa'   => null, 'fiscales' => [], 'comercio' => [],
             'documentos'=> [], 'estadoDocs' => [],
+            'catalogo'  => null, 'pagosPlan' => [],
         ];
 
         $cuenta = new CuentaRepo($db);
@@ -161,6 +163,13 @@ final class UsuariosControlador
             try {
                 $principal = Conexion::de($GLOBALS['lf_bd_principal'] ?? '');
                 $datos['empresa'] = (new EmpresaRepo($principal))->uno($_SESSION['empresa_id'] ?? 0);
+
+                // Contratar o renovar: el catálogo sale de config/planes.php
+                // y los pagos de la base principal. Sin catálogo, la
+                // pestaña sigue como antes (plan actual y "escríbenos").
+                $datos['catalogo']  = PlanRepo::catalogo();
+                $datos['pagosPlan'] = $datos['catalogo']
+                    ? (new PlanRepo($principal))->deEmpresa($_SESSION['empresa_id'] ?? 0) : [];
             } catch (\Throwable $e) {
                 error_log('[LibertyFin] plan: ' . $e->getMessage());
             }
@@ -227,6 +236,52 @@ final class UsuariosControlador
         } catch (\Throwable $e) {
             error_log('[LibertyFin] comercio: ' . $e->getMessage());
             $this->volver('/cuenta?t=comercio', 'No se pudieron guardar.', 'error');
+        }
+    }
+
+    /** La empresa elige un plan para pagar. */
+    public function solicitarPlan()
+    {
+        if (empty($_SESSION['empresa_id'])) {
+            $this->volver('/cuenta', 'Esa acción es de una empresa y tu cuenta no pertenece a ninguna.', 'error');
+        }
+        $this->token('/cuenta?t=plan');
+        try {
+            $principal = Conexion::de($GLOBALS['lf_bd_principal'] ?? '');
+            $clave = (string)($_POST['plan'] ?? '');
+            $periodo = ($_POST['periodo'] ?? '') === 'anual' ? 'anual' : 'mensual';
+            (new PlanRepo($principal))->solicitar((int)$_SESSION['empresa_id'], $clave, $periodo);
+            Auditoria::anota('plan.solicitar', $clave . ' · ' . $periodo, null, 'por pagar');
+            $this->volver('/cuenta?t=plan',
+                'Listo. Haz la transferencia con la referencia que aparece abajo y sube tu comprobante.', 'ok');
+        } catch (\InvalidArgumentException $e) {
+            $this->volver('/cuenta?t=plan', $e->getMessage(), 'error');
+        } catch (\Throwable $e) {
+            error_log('[LibertyFin] solicitar plan: ' . $e->getMessage());
+            $this->volver('/cuenta?t=plan', 'No se pudo registrar la solicitud.', 'error');
+        }
+    }
+
+    /** Sube el comprobante de la transferencia de un plan. */
+    public function comprobantePlan()
+    {
+        if (empty($_SESSION['empresa_id'])) {
+            $this->volver('/cuenta', 'Esa acción es de una empresa y tu cuenta no pertenece a ninguna.', 'error');
+        }
+        $this->token('/cuenta?t=plan');
+        try {
+            $principal = Conexion::de($GLOBALS['lf_bd_principal'] ?? '');
+            $ruta = \LibertyFin\Servicio\Archivos::documento($_FILES['archivo'] ?? [], 'pagoplan');
+            $pago = (new PlanRepo($principal))->comprobante(
+                (int)($_POST['id'] ?? 0), (int)$_SESSION['empresa_id'], $ruta);
+            Auditoria::anota('plan.comprobante', $pago['referencia'] ?? '', null, 'en revisión');
+            $this->volver('/cuenta?t=plan',
+                'Recibimos tu comprobante. Lo revisamos en un día hábil y te avisamos aquí.', 'ok');
+        } catch (\InvalidArgumentException $e) {
+            $this->volver('/cuenta?t=plan', $e->getMessage(), 'error');
+        } catch (\Throwable $e) {
+            error_log('[LibertyFin] comprobante plan: ' . $e->getMessage());
+            $this->volver('/cuenta?t=plan', 'No se pudo subir el comprobante.', 'error');
         }
     }
 

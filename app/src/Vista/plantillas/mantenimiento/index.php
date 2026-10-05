@@ -156,6 +156,77 @@ document.querySelectorAll('.lf-rech-emp').forEach(function(b){
 
 <?php endif; /* fin de solicitudes de alta */ ?>
 
+<?php /* ═══ PAGOS DE PLAN ═══
+   Comprobantes de transferencia que las empresas suben desde Mi cuenta → Plan.
+   Aprobar cambia su plan y extiende su vencimiento. */
+$pagosPlan = $pagosPlan ?? []; ?>
+<?php if ($pagosPlan || Permisos::puede('revisar.docs')): ?>
+<section class="card" style="<?= $pagosPlan
+    ? 'border-color:color-mix(in srgb,var(--lf-amb) 40%,transparent)' : '' ?>">
+  <header class="card-header">
+    <div><span>Pagos de plan por revisar</span>
+      <p style="font-size:12px;color:var(--lf-tinta-4);margin-top:2px;font-weight:400">
+        Verifica el depósito contra la referencia antes de aprobar: al aprobar, el plan
+        cambia y el vencimiento se extiende.</p></div>
+    <span class="badge <?= $pagosPlan ? 'bg-warning' : 'bg-success' ?>">
+      <?= $pagosPlan ? count($pagosPlan) . ' esperando' : 'Nada pendiente' ?></span>
+  </header>
+
+  <?php if (!$pagosPlan): ?>
+    <div class="card-body">
+      <p style="text-align:center;color:var(--lf-tinta-4);font-size:13px;padding:14px 0">
+        No hay comprobantes esperando revisión.</p>
+    </div>
+  <?php else: ?>
+  <div class="table-responsive lf-cards" style="padding:0 12px 6px">
+    <table class="table">
+      <thead><tr><th>Empresa</th><th>Plan</th><th class="text-end">Monto</th>
+        <th>Referencia</th><th>Comprobante</th><th style="width:300px">Revisión</th></tr></thead>
+      <tbody>
+      <?php foreach ($pagosPlan as $pp): ?>
+        <tr>
+          <td data-label="Empresa"><b style="font-weight:600"><?= P::e($pp['nombre_empresa']) ?></b>
+            <span style="display:block;color:var(--lf-tinta-4);font-size:11px">
+              Hoy: <?= P::e(ucfirst($pp['plan_actual'] ?: 'prueba')) ?>
+              <?= $pp['fecha_vencimiento'] ? '· vence ' . date('d/m/Y', strtotime($pp['fecha_vencimiento'])) : '' ?></span></td>
+          <td data-label="Plan" style="font-size:12.5px"><?= P::e($pp['nombre_plan']) ?>
+            <span style="display:block;color:var(--lf-tinta-4);font-size:11px">
+              +<?= (int)$pp['meses'] ?> mes<?= (int)$pp['meses'] === 1 ? '' : 'es' ?></span></td>
+          <td data-label="Monto" class="text-end lf-mono" style="font-weight:700">
+            <?= \LibertyFin\Dominio\Dinero::pesos($pp['monto']) ?></td>
+          <td data-label="Referencia" class="lf-mono" style="font-size:12px"><?= P::e($pp['referencia']) ?></td>
+          <td data-label="Comprobante">
+            <a href="<?= P::e($pp['comprobante']) ?>" target="_blank" rel="noopener"
+               style="font-size:12.5px;font-weight:600">Abrir</a>
+            <span style="display:block;color:var(--lf-tinta-4);font-size:11px">
+              hace <?= (int)$pp['horas'] < 24 ? (int)$pp['horas'] . ' h' : floor($pp['horas']/24) . ' d' ?></span></td>
+          <td data-label="Revisión">
+            <div style="display:flex;gap:6px;flex-wrap:wrap">
+              <form method="post" action="/mantenimiento/pago" style="flex:1;min-width:90px">
+                <input type="hidden" name="token" value="<?= P::e($token) ?>">
+                <input type="hidden" name="id" value="<?= (int)$pp['id'] ?>">
+                <input type="hidden" name="decision" value="aprobado">
+                <button class="btn btn-primary btn-sm" type="submit" style="width:100%">Aprobar</button>
+              </form>
+              <form method="post" action="/mantenimiento/pago" style="flex:2;min-width:170px;display:flex;gap:6px">
+                <input type="hidden" name="token" value="<?= P::e($token) ?>">
+                <input type="hidden" name="id" value="<?= (int)$pp['id'] ?>">
+                <input type="hidden" name="decision" value="rechazado">
+                <input class="form-control form-control-sm" name="motivo" placeholder="Motivo" required
+                       maxlength="300" style="min-width:0">
+                <button class="btn btn-secondary btn-sm" type="submit">Rechazar</button>
+              </form>
+            </div>
+          </td>
+        </tr>
+      <?php endforeach; ?>
+      </tbody>
+    </table>
+  </div>
+  <?php endif; ?>
+</section>
+<?php endif; ?>
+
 <?php /* ═══ BANDEJA DE REVISIÓN ═══ */ ?>
 <section class="card" style="<?= $porRevisar
     ? 'border-color:color-mix(in srgb,var(--lf-amb) 40%,transparent)' : '' ?>">

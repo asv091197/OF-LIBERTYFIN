@@ -125,6 +125,39 @@ final class Avisos
                       : 'Tu suscripción de LibertyFin vence pronto', $html);
     }
 
+    /**
+     * Se revisó el comprobante de un plan. Aprobado: dice hasta cuándo
+     * queda pagado. Rechazado: el motivo, que es lo único que sirve para
+     * corregirlo.
+     */
+    public static function pagoPlanRevisado($para, $nombre, $plan, $aprobado, $detalle, $url)
+    {
+        $c = self::correo();
+        if (!$c) return false;
+        $n = htmlspecialchars($nombre ?: 'hola', ENT_QUOTES);
+        $p = htmlspecialchars($plan, ENT_QUOTES);
+        if ($aprobado) {
+            $html = Correo::plantilla('Recibimos tu pago',
+                '<p>Hola ' . $n . ',</p>'
+              . '<p>Verificamos tu transferencia: el plan <b>' . $p . '</b> quedó activo.</p>'
+              . '<p style="padding:13px 16px;background:#eaf6ee;border-radius:10px;'
+              . 'color:#1d7a43;margin:16px 0">Vigente hasta el <b>'
+              . htmlspecialchars($detalle, ENT_QUOTES) . '</b>.</p>'
+              . '<p style="font-size:13px;color:#6d7a74">Gracias por seguir con nosotros.</p>',
+                ['Ver mi plan', $url]);
+            return $c->enviar($para, 'Recibimos tu pago de LibertyFin', $html);
+        }
+        $html = Correo::plantilla('No pudimos validar tu pago',
+            '<p>Hola ' . $n . ',</p>'
+          . '<p>Revisamos el comprobante de tu plan <b>' . $p . '</b> y hay que volver a subirlo:</p>'
+          . '<p style="padding:13px 16px;background:#fbf3e0;border-radius:10px;'
+          . 'color:#8a6410;margin:16px 0">' . nl2br(htmlspecialchars($detalle, ENT_QUOTES)) . '</p>'
+          . '<p style="font-size:13px;color:#6d7a74">Tu plan sigue como estaba. En cuanto subas '
+          . 'un comprobante correcto lo revisamos de nuevo.</p>',
+            ['Subir el comprobante', $url]);
+        return $c->enviar($para, 'No pudimos validar tu pago de LibertyFin', $html);
+    }
+
     /** Prueba: se manda a uno mismo para comprobar el SMTP. */
     public static function prueba($para)
     {

@@ -204,6 +204,187 @@ $dias = $venc ? floor(($venc - strtotime('today')) / 86400) : null;
     </div>
   </section>
 </div>
+
+<?php /* ═══ CONTRATAR O RENOVAR ═══
+   Solo si existe config/planes.php. Sin catálogo, la tarjeta de arriba ya
+   dice que se escriba a LibertyFin, como siempre. */
+if (!empty($catalogo)):
+  $ultimo = $pagosPlan[0] ?? null;
+  $estPago = $ultimo['estado'] ?? '';
+  $cu = $catalogo['cuenta'] ?? [];
+  $etiqueta = ['por_pagar'=>['Por pagar','bg-warning'], 'en_revision'=>['En revisión','bg-warning'],
+               'aprobado'=>['Aprobado','bg-success'], 'rechazado'=>['Rechazado','bg-danger'],
+               'cancelado'=>['Cancelado','bg-secondary']];
+?>
+
+<?php if (in_array($estPago, ['por_pagar','rechazado'], true)): ?>
+<section class="card" style="border-color:color-mix(in srgb,var(--lf-brand) 45%,transparent)">
+  <header class="card-header">
+    <div><span><?= $estPago === 'rechazado' ? 'Tu comprobante no se pudo validar' : 'Paga tu ' . P::e($ultimo['nombre_plan']) ?></span>
+      <p style="font-size:12px;color:var(--lf-tinta-4);margin-top:2px;font-weight:400">
+        Transferencia por <b class="lf-mono"><?= D::pesos($ultimo['monto']) ?></b>
+        · <?= (int)$ultimo['meses'] ?> mes<?= (int)$ultimo['meses']===1?'':'es' ?></p></div>
+    <span class="badge <?= $etiqueta[$estPago][1] ?>"><?= $etiqueta[$estPago][0] ?></span>
+  </header>
+  <div class="card-body">
+    <?php if ($estPago === 'rechazado' && !empty($ultimo['motivo_rechazo'])): ?>
+      <p style="font-size:12.5px;color:var(--lf-rojo);background:var(--lf-rojo-soft);
+                padding:10px 12px;border-radius:var(--lf-r);margin-bottom:14px;line-height:1.5">
+        <b>Motivo:</b> <?= P::e($ultimo['motivo_rechazo']) ?></p>
+    <?php endif; ?>
+
+    <div class="lf-split" style="align-items:start">
+      <div>
+        <?php foreach ([
+          'Banco'      => $cu['banco']   ?? '',
+          'Titular'    => $cu['titular'] ?? '',
+          'CLABE'      => $cu['clabe']   ?? '',
+          'Monto'      => D::pesos($ultimo['monto']),
+          'Referencia' => $ultimo['referencia'],
+        ] as $k => $v): if ($v === '') continue; ?>
+          <div style="display:flex;justify-content:space-between;gap:12px;padding:7px 0;
+                      border-bottom:1px solid var(--lf-linea);font-size:13px">
+            <span style="color:var(--lf-tinta-3)"><?= P::e($k) ?></span>
+            <b class="lf-mono" style="font-weight:600;text-align:right;word-break:break-all"><?= P::e($v) ?></b>
+          </div>
+        <?php endforeach; ?>
+        <p style="font-size:11.5px;color:var(--lf-tinta-4);margin-top:12px;line-height:1.55">
+          Pon la <b>referencia</b> en el concepto de la transferencia: así sabemos que es tuya.
+        </p>
+      </div>
+
+      <form method="post" action="/cuenta/plan/comprobante" enctype="multipart/form-data">
+        <input type="hidden" name="token" value="<?= P::e($token) ?>">
+        <input type="hidden" name="id" value="<?= (int)$ultimo['id'] ?>">
+        <label class="form-label">Comprobante de la transferencia</label>
+        <input type="file" name="archivo" required
+               accept="image/png,image/jpeg,image/webp,application/pdf"
+               style="font-size:11.5px;width:100%;margin-bottom:10px">
+        <button class="btn btn-primary" type="submit" style="width:100%">Enviar comprobante</button>
+        <p style="font-size:11px;color:var(--lf-tinta-4);margin-top:8px">
+          JPG, PNG o PDF, máximo 10 MB. Lo revisamos en un día hábil.</p>
+      </form>
+    </div>
+  </div>
+</section>
+
+<?php elseif ($estPago === 'en_revision'): ?>
+<div class="alert alert-info" style="margin-bottom:18px">
+  <?= W::icono('alerta','18px') ?>
+  <span><b>Estamos revisando tu pago</b> de <?= D::pesos($ultimo['monto']) ?>
+    (<?= P::e($ultimo['nombre_plan']) ?>, ref. <span class="lf-mono"><?= P::e($ultimo['referencia']) ?></span>).
+    En cuanto lo aprobemos, tu plan se renueva y lo verás aquí.
+    <a href="<?= P::e($ultimo['comprobante']) ?>" target="_blank" rel="noopener">Ver comprobante</a></span>
+</div>
+<?php endif; ?>
+
+<?php /* ═══ PLANES ═══
+   Tarjetas de planes con selector Mensual / Anual. El precio que se ve
+   cambia en el navegador, pero lo que se cobra lo calcula el servidor a
+   partir de plan + periodo (ver PlanRepo::solicitar): el navegador nunca
+   manda un monto. */
+$desc = (float)($catalogo['descuento_anual'] ?? 0);
+$pe = function ($n) { return D::pesos($n); };
+?>
+<section class="lf-planes" id="lfPlanes" data-periodo="mensual">
+  <header class="cab">
+    <h2>Elige tu plan</h2>
+    <p>Sin permanencia. Pagas solo el periodo que elijas y se suma a los días que te queden.</p>
+    <?php if ($desc > 0): ?>
+      <div class="lf-periodo" role="group" aria-label="Periodo de pago">
+        <button type="button" class="on" data-periodo="mensual">Mensual</button>
+        <button type="button" data-periodo="anual">Anual <span class="ahorro">−<?= rtrim(rtrim(number_format($desc, 1), '0'), '.') ?>%</span></button>
+      </div>
+    <?php endif; ?>
+  </header>
+
+  <div class="rejilla">
+    <?php foreach ($catalogo['planes'] as $clave => $pl):
+      $actual = strtolower((string)($em['plan'] ?? '')) === $clave; ?>
+      <article class="lf-plan<?= $pl['popular'] ? ' popular' : '' ?><?= $actual ? ' actual' : '' ?>">
+        <?php if ($pl['popular']): ?><span class="cinta">Más popular</span><?php endif; ?>
+        <h3><?= P::e($pl['nombre']) ?><?php if ($actual): ?> <span class="badge bg-success">Tu plan</span><?php endif; ?></h3>
+
+        <div class="precio" data-mensual="<?= $pl['periodos']['mensual']['por_mes'] ?>"
+             data-anual="<?= $pl['periodos']['anual']['por_mes'] ?>">
+          <b class="lf-mono" data-valor><?= $pe($pl['periodos']['mensual']['por_mes']) ?></b>
+          <span>MXN/mes<?= $pl['usuarios'] ? ' · ' . (int)$pl['usuarios'] . ' usuario' . ($pl['usuarios'] === 1 ? '' : 's') : '' ?></span>
+        </div>
+        <p class="cobro" data-mensual="Se cobra cada mes"
+           data-anual="Un solo pago de <?= P::e($pe($pl['periodos']['anual']['monto'])) ?> al año">
+          Se cobra cada mes</p>
+
+        <div class="caract">
+          <?php foreach ($pl['grupos'] as $titulo => $items): ?>
+            <?php if ($titulo !== ''): ?><h4><?= P::e($titulo) ?></h4><?php endif; ?>
+            <ul>
+              <?php foreach ($items as $it): ?>
+                <li><svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor"
+                         stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                      <polyline points="20 6 9 17 4 12"/></svg><?= P::e($it) ?></li>
+              <?php endforeach; ?>
+            </ul>
+          <?php endforeach; ?>
+        </div>
+
+        <form method="post" action="/cuenta/plan">
+          <input type="hidden" name="token" value="<?= P::e($token) ?>">
+          <input type="hidden" name="plan" value="<?= P::e($clave) ?>">
+          <input type="hidden" name="periodo" value="mensual" data-periodo-campo>
+          <button class="btn <?= ($pl['popular'] || $actual) ? 'btn-primary' : 'btn-secondary' ?>" type="submit">
+            <?= $actual ? 'Renovar' : 'Seleccionar' ?></button>
+        </form>
+      </article>
+    <?php endforeach; ?>
+  </div>
+</section>
+
+<script>
+(function(){
+  var caja = document.getElementById('lfPlanes');
+  if (!caja) return;
+  function pesos(n){ return '$' + Number(n).toLocaleString('es-MX', {minimumFractionDigits:2, maximumFractionDigits:2}); }
+  function poner(p){
+    caja.dataset.periodo = p;
+    caja.querySelectorAll('[data-periodo]').forEach(function(b){
+      if (b.tagName === 'BUTTON') b.classList.toggle('on', b.dataset.periodo === p);
+    });
+    caja.querySelectorAll('.precio').forEach(function(x){
+      x.querySelector('[data-valor]').textContent = pesos(x.dataset[p]);
+    });
+    caja.querySelectorAll('.cobro').forEach(function(x){ x.textContent = x.dataset[p]; });
+    caja.querySelectorAll('[data-periodo-campo]').forEach(function(i){ i.value = p; });
+  }
+  caja.querySelectorAll('.lf-periodo button').forEach(function(b){
+    b.addEventListener('click', function(){ poner(b.dataset.periodo); });
+  });
+})();
+</script>
+
+
+<?php if ($pagosPlan): ?>
+<section class="card">
+  <header class="card-header">Mis pagos</header>
+  <div class="table-responsive lf-cards" style="padding:0 12px 6px">
+    <table class="table">
+      <thead><tr><th>Fecha</th><th>Plan</th><th>Referencia</th>
+        <th class="text-end">Monto</th><th>Estado</th></tr></thead>
+      <tbody>
+      <?php foreach ($pagosPlan as $pp): $e2 = $etiqueta[$pp['estado']] ?? [$pp['estado'],'bg-secondary']; ?>
+        <tr>
+          <td data-label="Fecha"><?= date('d/m/Y', strtotime($pp['creado_en'])) ?></td>
+          <td data-label="Plan"><?= P::e($pp['nombre_plan']) ?></td>
+          <td data-label="Referencia" class="lf-mono" style="font-size:12px"><?= P::e($pp['referencia']) ?></td>
+          <td data-label="Monto" class="text-end lf-mono"><?= D::pesos($pp['monto']) ?></td>
+          <td data-label="Estado"><span class="badge <?= $e2[1] ?>"><?= $e2[0] ?></span></td>
+        </tr>
+      <?php endforeach; ?>
+      </tbody>
+    </table>
+  </div>
+</section>
+<?php endif; ?>
+<?php endif; /* fin del catálogo */ ?>
 <?php endif; ?>
 
 

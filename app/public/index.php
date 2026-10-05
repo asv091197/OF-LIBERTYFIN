@@ -175,6 +175,7 @@ $r->get('/mantenimiento',           ['LibertyFin\Controlador\MantenimientoContro
 $r->post('/mantenimiento/secciones',['LibertyFin\Controlador\MantenimientoControlador', 'secciones']);
 $r->post('/mantenimiento/migrar',   ['LibertyFin\Controlador\MantenimientoControlador', 'migrar']);
 $r->post('/mantenimiento/revisar',  ['LibertyFin\Controlador\MantenimientoControlador', 'revisar']);
+$r->post('/mantenimiento/pago',     ['LibertyFin\Controlador\MantenimientoControlador', 'revisarPago']);
 $r->post('/mantenimiento/correo',   ['LibertyFin\Controlador\MantenimientoControlador', 'probarCorreo']);
 $r->post('/mantenimiento/empresa/aprobar',  ['LibertyFin\Controlador\MantenimientoControlador', 'aprobarEmpresa']);
 $r->post('/mantenimiento/empresa/rechazar', ['LibertyFin\Controlador\MantenimientoControlador', 'rechazarEmpresa']);
@@ -192,6 +193,8 @@ $r->post('/cuenta/foto',         ['LibertyFin\Controlador\UsuariosControlador', 
 $r->post('/cuenta/fiscales',     ['LibertyFin\Controlador\UsuariosControlador', 'guardarFiscales']);
 $r->post('/cuenta/comercio',     ['LibertyFin\Controlador\UsuariosControlador', 'guardarComercio']);
 $r->post('/cuenta/documento',    ['LibertyFin\Controlador\UsuariosControlador', 'subirDocumento']);
+$r->post('/cuenta/plan',         ['LibertyFin\Controlador\UsuariosControlador', 'solicitarPlan']);
+$r->post('/cuenta/plan/comprobante', ['LibertyFin\Controlador\UsuariosControlador', 'comprobantePlan']);
 $r->post('/guia/vista',          ['LibertyFin\Controlador\UsuariosControlador', 'guiaVista']);
 $r->get('/guia',                 ['LibertyFin\Controlador\UsuariosControlador', 'verGuia']);
 $r->get('/corte',        ['LibertyFin\Controlador\CorteControlador', 'index']);
@@ -286,6 +289,7 @@ $permisos = [
   '/mantenimiento/secciones'=> 'secciones',
   '/mantenimiento/migrar'   => 'secciones',
   '/mantenimiento/revisar'  => 'revisar.docs',
+  '/mantenimiento/pago'     => 'revisar.docs',
   '/mantenimiento/correo'   => 'diagnostico',
   '/mantenimiento/empresa/aprobar'  => 'alta.empresas',
   '/mantenimiento/empresa/rechazar' => 'alta.empresas',
@@ -295,6 +299,8 @@ $permisos = [
   '/cuenta/fiscales'  => 'editar.empresa',
   '/cuenta/comercio'  => 'editar.empresa',
   '/cuenta/documento' => 'editar.empresa',
+  '/cuenta/plan'      => 'editar.empresa',
+  '/cuenta/plan/comprobante' => 'editar.empresa',
 ];
 
 $publicas = ['/login', '/salir', '/registro', '/ayuda-acceso',

@@ -53,7 +53,28 @@ if (preg_match('/^#[0-9a-fA-F]{6}$/', (string)$marca)): ?>
   <?php P::parcial('parciales/sidebar', ['activo' => $icono ?? '']); ?>
   <div class="lf-main">
     <?php P::parcial('parciales/topbar', ['titulo' => $titulo ?? '', 'icono' => $icono ?? 'panel', 'subtitulo' => $subtitulo ?? '']); ?>
-    <div class="lf-cont"><?= $contenido ?></div>
+    <div class="lf-cont">
+      <?php
+      // Aviso de suscripción: va dentro de .lf-cont para que se repinte
+      // con cada navegación sin recarga, y no se muestra en la propia
+      // pestaña Plan, donde ya está todo lo que dice.
+      $aboSus = \LibertyFin\Servicio\Suscripcion::aviso();
+      $enPlan = strpos($_SERVER['REQUEST_URI'] ?? '', '/cuenta') === 0
+             && strpos($_SERVER['REQUEST_URI'] ?? '', 't=plan') !== false;
+      if ($aboSus && !$enPlan): $vencida = $aboSus['dias'] < 0; ?>
+        <a class="alert alert-<?= $vencida ? 'danger' : 'warning' ?> lf-aviso-plan"
+           href="/cuenta?t=plan">
+          <?= W::icono('alerta','18px') ?>
+          <span><b><?= $vencida
+              ? 'Tu suscripción venció el ' . P::e($aboSus['fecha']) . '.'
+              : ($aboSus['dias'] === 0 ? 'Tu suscripción vence hoy.'
+                 : 'Tu suscripción vence en ' . $aboSus['dias'] . ' día' . ($aboSus['dias'] === 1 ? '' : 's')
+                   . ' (' . P::e($aboSus['fecha']) . ').') ?></b>
+            <?= $vencida ? 'Renueva para no perder el acceso.' : 'Renueva a tiempo para no perder el acceso.' ?>
+            <u>Renovar ahora</u></span>
+        </a>
+      <?php endif; ?>
+      <?= $contenido ?></div>
   </div>
   <?php if (!empty($_SESSION['lf_mostrar_guia'])): unset($_SESSION['lf_mostrar_guia']);
         P::parcial('parciales/guia'); endif; ?>

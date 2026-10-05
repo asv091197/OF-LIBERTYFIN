@@ -56,6 +56,7 @@ final class MantenimientoControlador
             ] : ['actual'=>0,'ultima'=>0,'que_hace'=>[]],
             'empresas'     => $todo ? $this->estadoDeLasEmpresas() : [],
             'porRevisar'   => $this->documentosPorRevisar(),
+            'pagosPlan'    => $this->pagosPorRevisar(),
             'solicitudes'  => Permisos::puede('alta.empresas') ? $this->solicitudes() : [],
             'puedeAlta'    => Permisos::puede('alta.empresas'),
             'correoListo'  => Avisos::activos(),
@@ -186,6 +187,66 @@ final class MantenimientoControlador
         // Lo más viejo primero: es lo que lleva más tiempo esperando.
         usort($r, function ($a, $b) { return (int)$b['horas'] - (int)$a['horas']; });
         return $r;
+    }
+
+    /** Pagos de plan con comprobante esperando, de todas las empresas. */
+    private function pagosPorRevisar()
+    {
+        if (!Permisos::puede('revisar.docs')) return [];
+        try {
+            $principal = Conexion::de($GLOBALS['lf_bd_principal'] ?? '');
+            return (new \LibertyFin\Datos\PlanRepo($principal))->porRevisar();
+        } catch (\Throwable $e) {
+            error_log('[LibertyFin] pagos de plan: ' . $e->getMessage());
+            return [];
+        }
+    }
+
+    /**
+     * Aprueba o rechaza el comprobante de un plan. Al aprobar, el plan de
+     * la empresa cambia y su vencimiento se extiende (ver PlanRepo).
+     */
+    public function revisarPago()
+    {
+        if (empty($_SESSION['lf_token']) || empty($_POST['token'])
+            || !hash_equals($_SESSION['lf_token'], $_POST['token'])) {
+            $this->volver('No se pudo verificar el formulario.', 'error');
+        }
+        try {
+            $principal = Conexion::de($GLOBALS['lf_bd_principal'] ?? '');
+            $decision  = $_POST['decision'] ?? '';
+            $pago = (new \LibertyFin\Datos\PlanRepo($principal))->resolver(
+                (int)($_POST['id'] ?? 0), $decision, $_POST['motivo'] ?? '',
+                $_SESSION['usuario_id'] ?? 0);
+            Auditoria::anota('plan.revisar', $pago['referencia'] ?? '', 'en revisión',
+                $decision . ($decision === 'aprobado' ? ' · vence ' . ($pago['vence_nuevo'] ?? '') : ''),
+                $principal);
+            // Sin aviso, la empresa se entera solo si vuelve a entrar a
+            // Plan. Si el correo falla el pago ya quedó resuelto: solo se
+            // dice que no se mandó, para avisar a mano.
+            $aprobado = $decision === 'aprobado';
+            $enviado = false;
+            if (!empty($pago['email_admin'])) {
+                $enviado = Avisos::pagoPlanRevisado(
+                    $pago['email_admin'], $pago['nombre_contacto'] ?? '', $pago['nombre_plan'],
+                    $aprobado,
+                    $aprobado ? date('d/m/Y', strtotime($pago['vence_nuevo'])) : ($_POST['motivo'] ?? ''),
+                    (isset($_SERVER['HTTPS']) ? 'https' : 'http') . '://'
+                        . ($_SERVER['HTTP_HOST'] ?? '') . '/cuenta?t=plan');
+            }
+            $nota = $enviado ? ' Se avisó por correo.'
+                  : (Avisos::activos() ? ' No se pudo mandar el correo: avísale tú.'
+                                       : ' El correo no está configurado: avísale tú.');
+            $this->volver(($aprobado
+                ? 'Pago aprobado. El plan ' . $pago['nombre_plan'] . ' vence el '
+                    . date('d/m/Y', strtotime($pago['vence_nuevo'])) . '.'
+                : 'Pago rechazado. La empresa verá el motivo.') . $nota, 'ok');
+        } catch (\InvalidArgumentException $e) {
+            $this->volver($e->getMessage(), 'error');
+        } catch (\Throwable $e) {
+            error_log('[LibertyFin] revisar pago: ' . $e->getMessage());
+            $this->volver('No se pudo registrar la revisión del pago.', 'error');
+        }
     }
 
     public function revisar()

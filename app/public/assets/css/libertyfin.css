@@ -2652,3 +2652,69 @@ tr[data-modal],a[data-modal]{cursor:pointer}
   .lf-serv{height:auto}
   .lf-serv .e,.lf-serv .e[style*="background-image"]{flex-basis:auto;height:auto}
 }
+
+/* Aviso de suscripción por vencer, arriba de cada pantalla */
+.lf-aviso-plan{display:flex;align-items:flex-start;gap:10px;margin-bottom:18px;
+  text-decoration:none;color:inherit;line-height:1.45}
+.lf-aviso-plan svg{flex-shrink:0;margin-top:1px}
+.lf-aviso-plan u{text-underline-offset:2px;font-weight:600;white-space:nowrap}
+.lf-aviso-plan:hover{color:inherit;filter:brightness(1.04)}
+
+/* ══════════════════════════════════════════════════════
+   PLANES · Mi cuenta → Plan
+   Tarjetas parejas con selector Mensual / Anual. Todo con las
+   variables del sistema: sigue el tema claro/oscuro y el color de
+   marca elegido.
+   ══════════════════════════════════════════════════════ */
+.lf-planes{margin-bottom:22px}
+.lf-planes .cab{text-align:center;margin:6px 0 24px}
+.lf-planes .cab h2{font-size:23px;letter-spacing:-.5px;margin:0 0 6px}
+.lf-planes .cab p{color:var(--lf-tinta-3);font-size:13.5px;margin:0 0 16px}
+
+.lf-periodo{display:inline-flex;gap:4px;padding:4px;border-radius:var(--lf-r-pill);
+  background:var(--lf-vidrio);border:1px solid var(--lf-linea)}
+.lf-periodo button{border:0;background:none;cursor:pointer;font:inherit;font-size:12.5px;
+  font-weight:600;color:var(--lf-tinta-3);padding:7px 16px;border-radius:var(--lf-r-pill);
+  display:inline-flex;align-items:center;gap:7px;transition:background .15s,color .15s}
+.lf-periodo button.on{background:var(--lf-brand);color:#fff;box-shadow:var(--lf-s1)}
+.lf-periodo .ahorro{font-size:10.5px;font-weight:700;padding:1px 6px;border-radius:99px;
+  background:var(--lf-brand-soft);color:var(--lf-brand-2)}
+.lf-periodo button.on .ahorro{background:rgba(255,255,255,.22);color:#fff}
+
+.lf-planes .rejilla{display:grid;grid-template-columns:repeat(auto-fit,minmax(215px,1fr));
+  gap:16px;align-items:stretch;padding-top:14px}
+
+.lf-plan{position:relative;display:flex;flex-direction:column;padding:22px 20px 20px;
+  background:var(--lf-sup);border:1px solid var(--lf-linea);border-radius:var(--lf-r-lg);
+  box-shadow:var(--lf-s1);transition:transform .15s,box-shadow .15s,border-color .15s}
+.lf-plan:hover{transform:translateY(-3px);box-shadow:var(--lf-s2);border-color:var(--lf-linea-f)}
+.lf-plan.popular{border:2px solid var(--lf-brand);box-shadow:var(--lf-s2)}
+.lf-plan.actual{background:color-mix(in srgb,var(--lf-brand) 5%,var(--lf-sup))}
+.lf-plan .cinta{position:absolute;top:-13px;left:50%;transform:translateX(-50%);
+  background:var(--lf-brand);color:#fff;font-size:10.5px;font-weight:700;letter-spacing:.6px;
+  text-transform:uppercase;padding:4px 14px;border-radius:99px;white-space:nowrap}
+
+.lf-plan h3{font-size:16px;font-weight:700;text-align:center;margin:0 0 12px;
+  display:flex;align-items:center;justify-content:center;gap:8px;flex-wrap:wrap}
+.lf-plan .precio{text-align:center}
+.lf-plan .precio b{display:block;font-size:34px;font-weight:700;letter-spacing:-1.2px;line-height:1.1}
+.lf-plan .precio span{font-size:12px;color:var(--lf-tinta-3)}
+.lf-plan .cobro{text-align:center;font-size:11.5px;color:var(--lf-tinta-4);margin:6px 0 16px;
+  min-height:2.9em;line-height:1.4}
+
+.lf-plan .caract{flex:1;border-top:1px dashed var(--lf-linea-f);padding-top:12px;margin-bottom:18px}
+.lf-plan .caract h4{font-size:10.5px;font-weight:700;letter-spacing:.8px;text-transform:uppercase;
+  color:var(--lf-tinta-4);margin:12px 0 6px}
+.lf-plan .caract h4:first-child{margin-top:0}
+.lf-plan .caract ul{list-style:none;margin:0 0 4px;padding:0}
+.lf-plan .caract li{display:flex;align-items:flex-start;gap:9px;font-size:13px;
+  color:var(--lf-tinta-2);padding:4px 0;line-height:1.4}
+.lf-plan .caract li svg{flex-shrink:0;margin-top:2px;color:var(--lf-brand-2)}
+
+.lf-plan form{margin-top:auto}
+.lf-plan form .btn{width:100%;padding:11px;border-radius:var(--lf-r-pill);font-weight:600}
+@media(max-width:560px){
+  .lf-planes .rejilla{grid-template-columns:1fr}
+  .lf-plan .cobro{min-height:0}
+}
+@media(prefers-reduced-motion:reduce){.lf-plan,.lf-periodo button{transition:none}}
