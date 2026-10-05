@@ -476,15 +476,17 @@ final class Emida
     public function catalogo()
     {
         if ($this->porProxy()) {
-            $script = $this->cfg['proxy_catalogo'] ?? 'get_products.php';
-            $r = $this->proxy($script, [
-                'username' => $this->cfg['usuario'] ?? '',
-                'password' => $this->cfg['clave'] ?? '',
-            ]);
-            if ($r['ok']) {
+                 $script = $this->cfg['proxy_catalogo'] ?? 'get_products.php';
+                 $r = $this->proxy($script, [
+                 'terminal' => $this->cfg['terminal'] ?? '',
+                 'clerk'    => $this->cfg['clerk']    ?? '',
+               ]);
+               
+                if ($r['ok']) {
+                $datos = is_array($r['datos']) ? $r['datos'] : self::deXml($r['crudo']);
                 return ['ok' => true, 'via' => 'intermediario',
-                        'productos' => self::normalizar($r['datos'])];
-            }
+                'productos' => self::normalizar($datos)];
+}
             // Un 404 aquí no es un fallo de red: es que ese script NO
             // existe en el intermediario. El sistema anterior solo subió
             // los de saldo, venta y consulta; el del catálogo nunca hizo
@@ -554,6 +556,57 @@ final class Emida
         }
         return $lista;
     }
+
+    /**
+ * Convierte el XML que devuelve el intermediario a un array plano.
+ *
+ * El proxy responde el XML crudo  —el proveedor no habla JSON—,
+ * así que aquí se recorre y se deja en la misma forma que ya entiende
+ * normalizar(). Se ignoran las envolturas del sobre SOAP y se busca
+ * la lista de productos donde esté, porque el nombre exacto de la
+ * etiqueta cambia según el comando.
+ */
+private static function deXml($xml)
+{
+    if (!is_string($xml) || trim($xml) === '') return [];
+
+    $prev = libxml_use_internal_errors(true);
+    $sx = simplexml_load_string($xml);
+    libxml_use_internal_errors($prev);
+    if ($sx === false) return [];
+
+    // El sobre SOAP mete todo dentro de Body, con su propio namespace.
+    $cuerpo = $sx;
+    $env = $sx->children('http://schemas.xmlsoap.org/soap/envelope/');
+    if (isset($env->Body)) $cuerpo = $env->Body;
+
+    $plano = json_decode(json_encode($cuerpo), true);
+    return self::aLista($plano);
+}
+
+/**
+ * Escarba un array anidado hasta encontrar una lista de productos.
+ * Devuelve la primera lista de arrays asociativos que aparezca.
+ */
+private static function aLista($nodo, $profundidad = 0)
+{
+    if ($profundidad > 6 || !is_array($nodo)) return [];
+
+    $esLista = true;
+    foreach ($nodo as $k => $v) {
+        if (is_int($k) && is_array($v)) continue;
+        $esLista = false;
+        break;
+    }
+    if ($esLista && $nodo) return array_values($nodo);
+
+    foreach ($nodo as $v) {
+        if (!is_array($v)) continue;
+        $r = self::aLista($v, $profundidad + 1);
+        if ($r) return $r;
+    }
+    return [];
+}
 
     private static function campo(array $p, array $nombres)
     {
