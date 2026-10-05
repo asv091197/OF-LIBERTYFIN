@@ -69,6 +69,8 @@ final class RecargasControlador
               $_SESSION['lf_prueba_emida'], $_SESSION['lf_pegar']);
     }
 
+    
+
     /**
      * Baja el catálogo del proveedor y lo guarda.
      *
