@@ -92,7 +92,7 @@ final class LigasControlador
         // reintenta, el proveedor devuelve la MISMA liga en vez de crear
         // otra, que es justo lo que se quiere.
         $semilla = $ventaId
-                 ? ('9' . str_pad((string)$ventaId, 7, '0', STR_PAD_LEFT) . date('ymdHi'))
+                 ? ('9' . str_pad((string)$ventaId, 6, '0', STR_PAD_LEFT) . date('ymdHi'))
                  : (date('ymdHis') . random_int(100000, 999999));
 
         $r = $api->generar([
