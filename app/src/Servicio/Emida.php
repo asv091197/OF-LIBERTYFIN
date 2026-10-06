@@ -23,21 +23,6 @@ final class Emida
 {
     /**
      * Qué operación sirve para qué, en orden de preferencia.
-     *
-     * POR QUÉ NO SE ADIVINA POR EL NOMBRE
-     *
-     * Este WSDL tiene unas 150 operaciones. Buscar por palabras eligió
-     * `CardBalance` para el saldo —que es de tarjetas de regalo— y
-     * `LookUpBillPaymentMxByInvocieNo` para recargar, que ni siquiera
-     * vende. Con un catálogo así, cualquier heurística acierta por
-     * casualidad.
-     *
-     * Estos nombres salen de los proxies del sistema anterior, que sí
-     * estaban probados contra la cuenta real: `pinDistSale.php`,
-     * `get_balance.php`, `lookup_transaction.php`.
-     *
-     * Se puede sobrescribir cada uno en config/integraciones.php si el
-     * proveedor cambia el contrato.
      */
     const OPERACIONES = [
         'saldo'     => ['GetMerchantBalance', 'GetTerminalBalance', 'GetAccountBalance'],
@@ -62,25 +47,7 @@ final class Emida
 
     public function __construct(array $cfg) { $this->cfg = $cfg; }
 
-    /**
-     * ¿Se habla con Emida por un intermediario?
-     *
-     * POR QUÉ ESTO EXISTE
-     *
-     * El endpoint real es ws.terecargamos.com:8448, y desde el hosting
-     * da "Connection refused". No es un puerto cerrado de salida: es que
-     * Emida solo acepta conexiones desde direcciones que tiene en lista,
-     * y el servidor de LibertyFin no está en ella.
-     *
-     * Por eso el sistema anterior nunca habló con Emida: hablaba con
-     * 104.248.179.142, un servidor propio cuya IP sí está autorizada, que
-     * reenvía las peticiones. Ahí viven get_balance.php, pinDistSale.php
-     * y lookup_transaction.php.
-     *
-     * Dos caminos, y los dos válidos:
-     *   · Pedirle a Emida que autorice la IP del hosting → modo directo.
-     *   · Seguir pasando por el intermediario → modo proxy.
-     */
+    /** ¿Se habla con Emida por un intermediario? */
     public function porProxy()
     {
         return trim((string)($this->cfg['proxy'] ?? '')) !== '';
@@ -101,9 +68,6 @@ final class Emida
             CURLOPT_RETURNTRANSFER => true,
             CURLOPT_TIMEOUT        => max(5, (int)($this->cfg['timeout'] ?? 30)),
             CURLOPT_FOLLOWLOCATION => true,
-            // El certificado SÍ se verifica, al revés que los proxies del
-            // sistema anterior. Si el intermediario va por http no hay
-            // nada que verificar, y eso ya se avisa en pantalla.
             CURLOPT_SSL_VERIFYPEER => true,
             CURLOPT_SSL_VERIFYHOST => 2,
             CURLOPT_USERAGENT      => 'LibertyFin/1.0',
@@ -148,23 +112,12 @@ final class Emida
         $usr  = (string)($this->cfg['usuario'] ?? '');
         $pwd  = (string)($this->cfg['clave'] ?? '');
 
-        // EL WSDL VA PROTEGIDO CON AUTENTICACIÓN BÁSICA.
-        //
-        // Sin esta cabecera, PHP descarga una página de error en vez del
-        // XML y SoapClient falla con "failed to load external entity",
-        // que no dice nada de lo que de verdad pasó. El sistema anterior
-        // sí la mandaba; yo la había omitido.
         $http = ['timeout' => $seg, 'user_agent' => 'LibertyFin/1.0'];
         if ($usr !== '') {
             $http['header'] = "Authorization: Basic " . base64_encode($usr . ':' . $pwd);
         }
 
         $ctx = stream_context_create([
-            // Para una dirección IP no hay certificado válido posible: se
-            // emiten para nombres de dominio. Si el endpoint es https a una
-            // IP, verificar siempre falla, y APAGAR la verificación no lo
-            // arregla: lo esconde. Por eso esto se queda en true y el
-            // aviso dice que hay que pedir un dominio.
             'ssl' => ['verify_peer' => true, 'verify_peer_name' => true,
                       'allow_self_signed' => false],
             'http' => $http,
@@ -173,16 +126,12 @@ final class Emida
         $opciones = [
             'trace'              => true,
             'exceptions'         => true,
-            // Sin caché mientras se está probando: un WSDL mal descargado
-            // queda guardado y sigue fallando aunque ya se arregle.
             'cache_wsdl'         => !empty($this->cfg['sandbox']) ? WSDL_CACHE_NONE : WSDL_CACHE_DISK,
             'connection_timeout' => $seg,
             'features'           => SOAP_SINGLE_ELEMENT_ARRAYS,
             'encoding'           => 'UTF-8',
             'stream_context'     => $ctx,
         ];
-        // Y también como credenciales del propio cliente, para las
-        // llamadas que van después de leer el WSDL.
         if ($usr !== '') { $opciones['login'] = $usr; $opciones['password'] = $pwd; }
 
         try {
@@ -192,12 +141,6 @@ final class Emida
         }
     }
 
-    /**
-     * Traduce el error de SOAP a algo accionable.
-     *
-     * "failed to load external entity" significa que PHP no pudo bajar el
-     * XML, y las causas son pocas y conocidas. Decirlas ahorra una tarde.
-     */
     private static function explicar($wsdl, $mensaje)
     {
         $esHttps = strncasecmp($wsdl, 'https://', 8) === 0;
@@ -219,26 +162,15 @@ final class Emida
         return 'No se pudo conectar con Emida: ' . $mensaje;
     }
 
-    /**
-     * Prueba la conexión y dice qué falla, paso por paso.
-     * Sirve para no adivinar cuando una recarga no sale.
-     */
     public function probar()
     {
         $wsdl = trim((string)($this->cfg['wsdl'] ?? ''));
         $r = [];
 
-        // Un renglón informativo NO detiene la prueba. Antes "va cifrada"
-        // contaba como fallo, así que con HTTP —que es lo normal aquí—
-        // la revisión se cortaba justo antes de lo único que importa:
-        // si el WSDL se lee y a dónde apunta.
         $agrega = function (&$r, $que, $ok, $detalle, $bloquea = true) {
             $r[] = ['que' => $que, 'ok' => $ok, 'detalle' => $detalle, 'bloquea' => $bloquea];
         };
 
-        // La extensión SOAP hace falta para LLAMAR, no para leer el WSDL.
-        // Si no está, el resto del diagnóstico sigue siendo útil: dice a
-        // dónde apunta y qué ofrece, que es lo que hay que averiguar.
         $agrega($r, 'Extensión SOAP de PHP', class_exists('SoapClient'),
             class_exists('SoapClient')
                 ? 'disponible'
@@ -258,7 +190,6 @@ final class Emida
 
         foreach ($r as $x) if ($x['bloquea'] && !$x['ok']) return $r;
 
-        // Si va por intermediario, lo que importa es que ESE responda.
         if ($this->porProxy()) {
             $p = $this->proxy($this->cfg['proxy_saldo'] ?? 'get_balance.php', [
                 'username' => $this->cfg['usuario'] ?? '',
@@ -269,21 +200,17 @@ final class Emida
                          : $p['error']);
         }
 
-        // 1 · ¿Se baja el XML?
         $d = $this->bajarWsdl();
         $agrega($r, 'Descarga del WSDL', $d['ok'],
             $d['ok'] ? ($d['bytes'] . ' bytes de XML') : $d['error']);
         if (!$d['ok']) return $r;
 
-        // 2 · ¿A dónde manda las llamadas? Esto es lo que suele fallar:
-        // el WSDL se lee y el endpoint que declara es otro.
         $ep = $this->endpoint();
         $mismoHost = $ep && parse_url($ep, PHP_URL_HOST) === parse_url($wsdl, PHP_URL_HOST);
         $agrega($r, 'A dónde manda las llamadas', (bool)$ep,
             $ep ? ($ep . ($mismoHost ? '' : '  ← host distinto al del WSDL'))
                 : 'el WSDL no declara <soap:address>');
 
-        // 3 · ¿Responde ese endpoint?
         if ($ep && !$this->porProxy()) {
             $abre = @fsockopen(
                 (parse_url($ep, PHP_URL_SCHEME) === 'https' ? 'ssl://' : '') . parse_url($ep, PHP_URL_HOST),
@@ -299,12 +226,9 @@ final class Emida
             }
         }
 
-        // 4 · Qué operaciones ofrece, y cuál sirve para qué.
         $ops = $this->operacionesDelXml();
         if ($ops['ok']) {
             $n = $ops['operaciones'];
-            // 150 nombres en pantalla no se leen. Se dice cuántos y se
-            // muestran los que de verdad se van a usar.
             $agrega($r, 'Operaciones que ofrece', count($n) > 0,
                 count($n) . ' en total');
             foreach (['saldo' => 'saldo', 'validar' => 'validar número',
@@ -320,7 +244,6 @@ final class Emida
         return $r;
     }
 
-    /** Los campos que toda petición lleva. */
     private function base()
     {
         return [
@@ -331,14 +254,6 @@ final class Emida
         ];
     }
 
-    /**
-     * Descarga el WSDL como texto, con su autenticación.
-     *
-     * Se hace aparte de SoapClient a propósito: SoapClient falla con un
-     * mensaje único ("Could not connect to host") sin importar si el
-     * problema fue la descarga, el XML o el endpoint. Bajándolo a mano
-     * se puede decir exactamente cuál de los tres.
-     */
     public function bajarWsdl()
     {
         $wsdl = trim((string)($this->cfg['wsdl'] ?? ''));
@@ -368,14 +283,6 @@ final class Emida
         return ['ok' => true, 'xml' => $xml, 'bytes' => strlen($xml)];
     }
 
-    /**
-     * A qué dirección se mandan las llamadas.
-     *
-     * NO es la misma que la del WSDL. El XML declara su propio endpoint
-     * en <soap:address>, y si ahí dice https o una IP distinta, las
-     * llamadas van a otro lado aunque el WSDL se haya leído bien. Ese es
-     * justo el caso de "se descargó el WSDL pero no conecta".
-     */
     public function endpoint()
     {
         $d = $this->bajarWsdl();
@@ -386,7 +293,6 @@ final class Emida
         return null;
     }
 
-    /** Las operaciones, leídas del XML. No necesita conectar a nada. */
     public function operacionesDelXml()
     {
         $d = $this->bajarWsdl();
@@ -396,21 +302,12 @@ final class Emida
         return ['ok' => true, 'operaciones' => $nombres];
     }
 
-    /**
-     * Qué operaciones ofrece de verdad este WSDL.
-     *
-     * Los nombres que yo usaba —GetBalance, LookupTransaction,
-     * SubmitTransaction— salieron de la documentación general de Emida,
-     * no de ESTE servicio. El WSDL es la única fuente que no se
-     * equivoca: se le pregunta y se acabó la adivinanza.
-     */
     public function operaciones()
     {
         try {
             $fns = $this->cliente()->__getFunctions();
             $r = [];
             foreach ((array)$fns as $f) {
-                // Vienen como "TipoRespuesta Nombre(TipoPeticion $p)"
                 if (preg_match('/\s(\w+)\(/', (string)$f, $m)) $r[$m[1]] = (string)$f;
             }
             return ['ok' => true, 'operaciones' => $r];
@@ -419,23 +316,12 @@ final class Emida
         }
     }
 
-    /** Los tipos que espera cada operación, para saber qué campos mandar. */
     public function tipos()
     {
         try { return ['ok' => true, 'tipos' => (array)$this->cliente()->__getTypes()]; }
         catch (\Throwable $e) { return ['ok' => false, 'error' => $e->getMessage()]; }
     }
 
-    /**
-     * Busca la operación que sirve para algo, por lo que su nombre
-     * contiene. Así funciona aunque el proveedor la llame distinto:
-     * GetBalance, ObtenerSaldo, BalanceInquiry…
-     */
-    /**
-     * La operación para un propósito.
-     * Primero lo que diga la configuración, luego la lista de preferencia,
-     * y solo se devuelve si el WSDL de verdad la ofrece.
-     */
     public function operacionPara($proposito)
     {
         $propia = trim((string)($this->cfg['op_' . $proposito] ?? ''));
@@ -451,7 +337,6 @@ final class Emida
         return null;
     }
 
-    /** Los nombres disponibles, para decirlos en un mensaje de error. */
     private function nombresDisponibles()
     {
         $o = $this->operacionesDelXml();
@@ -460,37 +345,21 @@ final class Emida
 
     /**
      * El catálogo de productos del proveedor.
-     *
-     * POR QUÉ ESTO ERA LO QUE FALTABA
-     *
-     * Yo tenía un desplegable con "Telcel, Movistar, AT&T" y un monto
-     * libre. Emida no funciona así: cada combinación de compañía y monto
-     * es un PRODUCTO con su propio identificador. "Recarga Telcel $200"
-     * es el 5077200, y mandar otra cosa da el código 51.
-     *
-     * Y hay mucho más que recargas: pago de agua, gas, gobierno,
-     * tarjetas de regalo, internet. Unos son de monto fijo (Venta
-     * Directa) y otros de monto variable que primero se consulta
-     * (Consulta/Pago). Sin el catálogo no se puede vender ninguno.
      */
     public function catalogo()
     {
         if ($this->porProxy()) {
-                 $script = $this->cfg['proxy_catalogo'] ?? 'get_products.php';
-                 $r = $this->proxy($script, [
-                 'terminal' => $this->cfg['terminal'] ?? '',
-                 'clerk'    => $this->cfg['clerk']    ?? '',
-               ]);
-               
-                if ($r['ok']) {
+            $script = $this->cfg['proxy_catalogo'] ?? 'get_products.php';
+            $r = $this->proxy($script, [
+                'terminal' => $this->cfg['terminal'] ?? '',
+                'clerk'    => $this->cfg['clerk']    ?? '',
+            ]);
+
+            if ($r['ok']) {
                 $datos = is_array($r['datos']) ? $r['datos'] : self::deXml($r['crudo']);
                 return ['ok' => true, 'via' => 'intermediario',
-                'productos' => self::normalizar($datos)];
-}
-            // Un 404 aquí no es un fallo de red: es que ese script NO
-            // existe en el intermediario. El sistema anterior solo subió
-            // los de saldo, venta y consulta; el del catálogo nunca hizo
-            // falta porque los productos se capturaban a mano.
+                        'productos' => self::normalizar($datos)];
+            }
             if (strpos($r['error'], '404') !== false) {
                 return ['ok' => false, 'sin_script' => true, 'error' =>
                     'El intermediario no tiene el script del catálogo (' . $script . '). '
@@ -514,99 +383,206 @@ final class Emida
     }
 
     /**
+     * Quita la envoltura HTML del intermediario.
+     *
+     * EL INTERMEDIARIO DEVUELVE UNA PÁGINA DE DEBUG, NO XML
+     *
+     * En vez del sobre SOAP a secas, devuelve:
+     *
+     *   <h3>HTTP Code: 200</h3><h3>Respuesta del servidor:</h3>
+     *   <pre>&lt;?xml version=&quot;1.0&quot; ...&gt;...&lt;/soapenv:Envelope&gt;
+     *   </pre>
+     *
+     * SE HACE CON strpos, NO CON preg_match.
+     *
+     * El cuerpo pesa alrededor de 1 MB, y `.*?` no codicioso sobre ese
+     * tamaño revienta el pcre.backtrack_limit de PHP (1 000 000 pasos
+     * por defecto). Cuando eso pasa, preg_match NO devuelve 0: devuelve
+     * false, y el código cree que no hay <pre> cuando sí lo hay. Por eso
+     * el primer intento cayó al caso 2, arrastró el </pre> final al XML
+     * y el parser falló con "Extra content at the end of the document".
+     *
+     * strpos y substr no tienen límite de backtracking: recorren el
+     * string una vez y ya.
+     */
+    private static function desenvolver($cuerpo)
+    {
+        if (!is_string($cuerpo) || trim($cuerpo) === '') return '';
+
+        // Caso 0 · ya es XML limpio.
+        $ini = ltrim($cuerpo);
+        if (strncmp($ini, '<?xml', 5) === 0
+            || stripos($ini, '<soapenv:Envelope') === 0
+            || stripos($ini, '<Envelope') === 0) {
+            return $cuerpo;
+        }
+
+        // ¿Hay <pre>?
+        $p = stripos($cuerpo, '<pre');
+        if ($p === false) {
+            // Caso 3 · escapado sin <pre>.
+            if (strpos($cuerpo, '&lt;') !== false) {
+                return html_entity_decode($cuerpo, ENT_QUOTES | ENT_HTML5, 'UTF-8');
+            }
+            return $cuerpo;
+        }
+
+        // Saltar la etiqueta de apertura <pre ...> (o <pre>).
+        $ini = strpos($cuerpo, '>', $p);
+        if ($ini === false) return $cuerpo;
+        $ini++;
+
+        // Buscar el </pre>. Si no está, tomar hasta el final. El script
+        // del intermediario se corta antes de cerrarlo.
+        $fin = stripos($cuerpo, '</pre>', $ini);
+        $trozo = $fin === false
+            ? substr($cuerpo, $ini)
+            : substr($cuerpo, $ini, $fin - $ini);
+
+        return html_entity_decode($trozo, ENT_QUOTES | ENT_HTML5, 'UTF-8');
+    }
+
+    /**
+     * Convierte la respuesta del intermediario a una lista de productos.
+     *
+     * DOS ENVOLTORIOS, NO UNO
+     *
+     *  1. La página HTML del intermediario (<h3>…<pre>…). Se quita con
+     *     desenvolver().
+     *  2. El sobre SOAP del proveedor, donde el contenido real va como
+     *     CADENA XML escapada dentro de <return>:
+     *
+     *        <return>&lt;ProductFlowInfoServiceResponse&gt;…
+     *                &lt;Products&gt;&lt;Product&gt;…&lt;/Product&gt;…
+     *
+     *     Para SimpleXML ese <return> es un STRING, no un árbol. Hay que
+     *     desescaparlo y parsearlo otra vez o los productos se quedan
+     *     dentro de la cadena y se pierden.
+     */
+    private static function deXml($xml)
+    {
+        $xml = self::desenvolver($xml);
+        if ($xml === '') return [];
+
+        $prev = libxml_use_internal_errors(true);
+        $sx = simplexml_load_string($xml);
+        libxml_use_internal_errors($prev);
+        if ($sx === false) return [];
+
+        // Sacar el <return> del sobre, sin pelearse con los namespaces
+        // (local-name() ignora el prefijo, que cambia entre versiones).
+        $ret = $sx->xpath('//*[local-name()="return"]');
+        if ($ret && isset($ret[0])) {
+            $prev = libxml_use_internal_errors(true);
+            $interno = simplexml_load_string((string)$ret[0]);
+            libxml_use_internal_errors($prev);
+
+            if ($interno !== false) {
+                // El proveedor manda su propio ResponseCode aquí dentro.
+                // Se deja en el log para no perderlo.
+                $rc = $interno->xpath('//*[local-name()="ResponseCode"]');
+                $cod = $rc ? trim((string)$rc[0]) : '';
+                if ($cod !== '' && $cod !== '00') {
+                    $rm = $interno->xpath('//*[local-name()="ResponseMessage"]');
+                    error_log('[LibertyFin] catálogo Emida: ResponseCode ' . $cod
+                        . ' — ' . ($rm ? mb_substr((string)$rm[0], 0, 200) : 'sin mensaje'));
+                    return [];
+                }
+
+                // Los productos viven en Products/Product.
+                $prod = $interno->xpath('//*[local-name()="Products"]/*[local-name()="Product"]');
+                if (!$prod) $prod = $interno->xpath('//*[local-name()="Product"]');
+                if ($prod && count($prod) > 0) {
+                    return json_decode(json_encode($prod), true);
+                }
+            }
+        }
+
+        // Sin <return>, se intenta como XML normal por si cambia el
+        // formato. No estorba y evita romper si pasa.
+        $cuerpo = $sx;
+        $env = $sx->children('http://schemas.xmlsoap.org/soap/envelope/');
+        if (isset($env->Body)) $cuerpo = $env->Body;
+        return self::aLista(json_decode(json_encode($cuerpo), true));
+    }
+
+    /**
+     * Escarba un array anidado hasta encontrar una lista de productos.
+     * Devuelve la primera lista de arrays asociativos que aparezca.
+     */
+    private static function aLista($nodo, $profundidad = 0)
+    {
+        if ($profundidad > 6 || !is_array($nodo)) return [];
+
+        $esLista = true;
+        foreach ($nodo as $k => $v) {
+            if (is_int($k) && is_array($v)) continue;
+            $esLista = false;
+            break;
+        }
+        if ($esLista && $nodo) return array_values($nodo);
+
+        foreach ($nodo as $v) {
+            if (!is_array($v)) continue;
+            $r = self::aLista($v, $profundidad + 1);
+            if ($r) return $r;
+        }
+        return [];
+    }
+
+    /**
      * Pone el catálogo en una forma estable.
      *
-     * El proveedor devuelve nombres de campo distintos según la
-     * operación y la versión. Se aceptan todos los que se han visto y se
-     * traducen a uno solo, para que el resto del sistema no tenga que
-     * saber cuál vino.
+     * El proveedor devuelve nombres de campo distintos según la operación
+     * y la versión. Se aceptan todos los que se han visto —incluidos los
+     * que manda Emida hoy: ProductCategory, ProductUFee, FlowType,
+     * AmountMin, AmountMax— y se traducen a uno solo, para que el resto
+     * del sistema no tenga que saber cuál vino.
      */
     private static function normalizar($datos)
     {
         $lista = [];
         if (is_object($datos)) $datos = (array)$datos;
         if (is_array($datos)) {
-            // A veces viene envuelto: {Products: {Product: [...]}}
             foreach (['Products','Product','productos','items','data'] as $k) {
                 if (isset($datos[$k])) { $datos = $datos[$k]; break; }
             }
             if (is_object($datos)) $datos = (array)$datos;
+
             foreach ((array)$datos as $p) {
-                $p = is_object($p) ? (array)$p : (array)$p;
+                $p = (array)$p;
                 $id = self::campo($p, ['ProductId','productId','id','ProductID']);
                 if ($id === null || $id === '') continue;
-                $min = self::campo($p, ['MinAmount','minAmount','monto_min','MinimumAmount']);
-                $max = self::campo($p, ['MaxAmount','maxAmount','monto_max','MaximumAmount']);
+
+                $min   = self::campo($p, ['AmountMin','MinAmount','minAmount','monto_min','MinimumAmount']);
+                $max   = self::campo($p, ['AmountMax','MaxAmount','maxAmount','monto_max','MaximumAmount']);
                 $monto = self::campo($p, ['Amount','amount','monto','Price','FaceValue']);
+                $flow  = strtoupper((string)self::campo($p, ['FlowType','flowType']));
+
+                // FlowType decide el tipo sin ambigüedad:
+                //   A = Venta Directa  → monto fijo, se vende tal cual
+                //   B = Consulta/Pago  → monto variable, primero se consulta
+                // Si no viene, se deduce: min/max > 0 o sin monto = variable.
+                if ($flow === 'B')      $tipo = 'consulta';
+                elseif ($flow === 'A')  $tipo = 'directa';
+                else $tipo = (self::num($min) > 0 || self::num($max) > 0 || self::num($monto) <= 0)
+                             ? 'consulta' : 'directa';
+
                 $lista[] = [
                     'producto_id' => (string)$id,
                     'nombre'      => (string)self::campo($p, ['ProductName','productName','nombre','Description','Name']),
-                    'categoria'   => (string)self::campo($p, ['CategoryName','category','categoria','Category']),
+                    'categoria'   => (string)self::campo($p, ['ProductCategory','CategoryName','category','categoria','Category']),
                     'carrier'     => (string)self::campo($p, ['CarrierName','carrier','proveedor','Carrier']),
-                    'comision'    => self::num(self::campo($p, ['Fee','fee','comision','UserFee'])),
+                    'comision'    => self::num(self::campo($p, ['ProductUFee','Fee','fee','comision','UserFee'])),
                     'monto'       => self::num($monto),
                     'monto_min'   => self::num($min),
                     'monto_max'   => self::num($max),
-                    // Monto fijo = se vende directo. Variable = primero
-                    // se consulta cuánto debe el cliente.
-                    'tipo'        => (self::num($min) > 0 || self::num($max) > 0 || self::num($monto) <= 0)
-                                     ? 'consulta' : 'directa',
+                    'tipo'        => $tipo,
                 ];
             }
         }
         return $lista;
     }
-
-    /**
- * Convierte el XML que devuelve el intermediario a un array plano.
- *
- * El proxy responde el XML crudo  —el proveedor no habla JSON—,
- * así que aquí se recorre y se deja en la misma forma que ya entiende
- * normalizar(). Se ignoran las envolturas del sobre SOAP y se busca
- * la lista de productos donde esté, porque el nombre exacto de la
- * etiqueta cambia según el comando.
- */
-private static function deXml($xml)
-{
-    if (!is_string($xml) || trim($xml) === '') return [];
-
-    $prev = libxml_use_internal_errors(true);
-    $sx = simplexml_load_string($xml);
-    libxml_use_internal_errors($prev);
-    if ($sx === false) return [];
-
-    // El sobre SOAP mete todo dentro de Body, con su propio namespace.
-    $cuerpo = $sx;
-    $env = $sx->children('http://schemas.xmlsoap.org/soap/envelope/');
-    if (isset($env->Body)) $cuerpo = $env->Body;
-
-    $plano = json_decode(json_encode($cuerpo), true);
-    return self::aLista($plano);
-}
-
-/**
- * Escarba un array anidado hasta encontrar una lista de productos.
- * Devuelve la primera lista de arrays asociativos que aparezca.
- */
-private static function aLista($nodo, $profundidad = 0)
-{
-    if ($profundidad > 6 || !is_array($nodo)) return [];
-
-    $esLista = true;
-    foreach ($nodo as $k => $v) {
-        if (is_int($k) && is_array($v)) continue;
-        $esLista = false;
-        break;
-    }
-    if ($esLista && $nodo) return array_values($nodo);
-
-    foreach ($nodo as $v) {
-        if (!is_array($v)) continue;
-        $r = self::aLista($v, $profundidad + 1);
-        if ($r) return $r;
-    }
-    return [];
-}
 
     private static function campo(array $p, array $nombres)
     {
@@ -669,8 +645,6 @@ private static function aLista($nodo, $profundidad = 0)
         try {
             $op = $this->operacionPara('validar');
             if (!$op) {
-                // Sin validación previa se puede seguir: es una protección,
-                // no un requisito. Pero se avisa, porque cambia el riesgo.
                 return ['ok' => true, 'sin_validar' => true];
             }
             $r = $this->cliente()->__soapCall($op, [array_merge($this->base(), [
@@ -752,8 +726,6 @@ private static function aLista($nodo, $profundidad = 0)
                     'codigo' => $resp, 'h2h' => $h2h];
 
         } catch (\SoapFault $e) {
-            // Un timeout NO es un fallo: la recarga pudo haber salido. Se
-            // avisa de otra forma para que nadie la reintente a ciegas.
             $esTimeout = stripos($e->getMessage(), 'timed out') !== false
                       || stripos($e->getMessage(), 'timeout') !== false;
             return ['ok' => false, 'incierta' => $esTimeout,
