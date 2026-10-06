@@ -21,9 +21,6 @@ namespace LibertyFin\Servicio;
  */
 final class Emida
 {
-    /**
-     * Qué operación sirve para qué, en orden de preferencia.
-     */
     const OPERACIONES = [
         'saldo'     => ['GetMerchantBalance', 'GetTerminalBalance', 'GetAccountBalance'],
         'validar'   => ['CheckTrxById', 'LookUpTransactionByInvocieNo', 'CheckTBID'],
@@ -33,7 +30,6 @@ final class Emida
         'prueba'    => ['CommTest'],
     ];
 
-    /** Los códigos que el proveedor documenta. */
     const ERRORES = [
         '16'   => 'El número no existe o no admite recargas',
         '51'   => 'Monto no válido para esa compañía',
@@ -47,7 +43,6 @@ final class Emida
 
     public function __construct(array $cfg) { $this->cfg = $cfg; }
 
-    /** ¿Se habla con Emida por un intermediario? */
     public function porProxy()
     {
         return trim((string)($this->cfg['proxy'] ?? '')) !== '';
@@ -55,27 +50,93 @@ final class Emida
 
     /**
      * Llama a un script del intermediario.
-     * Devuelve lo que responda, ya decodificado si es JSON.
+     *
+     * CADA SCRIPT TIENE SU PROPIO CONTRATO
+     *
+     *   get_products.php   acepta GET con ?terminal=...&clerk=...
+     *   pinDistSale.php    exige POST con JSON en el body
+     *
+     * Y EL "success:false" DEL INTERMEDIARIO TIENE DOS SIGNIFICADOS
+     *
+     * El procesador del intermediario envuelve TODO con success. Un
+     * success:false puede ser:
+     *
+     *   A · Pre-flight: parámetros mal, método mal, timeout del propio
+     *       script. La petición NO llegó a Emida. No hay nada incierto.
+     *
+     *   B · Respuesta de Emida: el proveedor contestó con un código de
+     *       rechazo (51, 16, etc.) y el processor lo puso como
+     *       success:false con los códigos adentro. La transacción SÍ
+     *       llegó y PUDO haber salido.
+     *
+     * Se distinguen por la presencia de responseCode/H2HResultCode.
+     * Antes TODO se trataba como caso A, así que un rechazo de Emida
+     * quedaba como "no salió" y no había forma de saber si el saldo
+     * del cliente se había movido.
      */
-    private function proxy($script, array $params)
+    private function proxy($script, array $params, $forzarMetodo = null)
     {
-        $base = rtrim((string)($this->cfg['proxy'] ?? ''), '/');
-        $url  = $base . '/' . ltrim($script, '/');
-        if ($params) $url .= '?' . http_build_query($params);
+        $base   = rtrim((string)($this->cfg['proxy'] ?? ''), '/');
+        $url    = $base . '/' . ltrim($script, '/');
+        $metodo = strtoupper($forzarMetodo ?: 'POST');
+        $seg    = max(5, (int)($this->cfg['timeout'] ?? 30));
 
-        $ch = curl_init($url);
-        curl_setopt_array($ch, [
-            CURLOPT_RETURNTRANSFER => true,
-            CURLOPT_TIMEOUT        => max(5, (int)($this->cfg['timeout'] ?? 30)),
-            CURLOPT_FOLLOWLOCATION => true,
-            CURLOPT_SSL_VERIFYPEER => true,
-            CURLOPT_SSL_VERIFYHOST => 2,
-            CURLOPT_USERAGENT      => 'LibertyFin/1.0',
-        ]);
-        $cuerpo = curl_exec($ch);
-        $codigo = curl_getinfo($ch, CURLINFO_HTTP_CODE);
-        $error  = curl_error($ch);
-        curl_close($ch);
+        // ── LOG DE SALIDA · qué se manda ──
+        // Sin esto no se puede saber si el terminalId que sale es el
+        // de la config o si algún fallback lo está pisando. Aparece en
+        // el error_log de PHP, buscable por "proxy ".
+        error_log('[LibertyFin] proxy ' . $script . ' → '
+            . json_encode($params, JSON_UNESCAPED_UNICODE));
+
+        $intenta = function ($metodo) use ($url, $params, $seg) {
+            $ch = curl_init();
+            $opts = [
+                CURLOPT_RETURNTRANSFER => true,
+                CURLOPT_TIMEOUT        => $seg,
+                CURLOPT_FOLLOWLOCATION => true,
+                CURLOPT_SSL_VERIFYPEER => true,
+                CURLOPT_SSL_VERIFYHOST => 2,
+                CURLOPT_USERAGENT      => 'LibertyFin/1.0',
+            ];
+            if ($metodo === 'POST') {
+                // JSON, no form-encoded. pinDistSale.php hace
+                // json_decode(file_get_contents('php://input')) y con
+                // form-encoded contesta "Datos no válidos".
+                $opts[CURLOPT_URL]        = $url;
+                $opts[CURLOPT_POST]       = true;
+                $opts[CURLOPT_POSTFIELDS] = json_encode($params, JSON_UNESCAPED_UNICODE);
+                $opts[CURLOPT_HTTPHEADER] = ['Content-Type: application/json'];
+            } else {
+                $opts[CURLOPT_URL] = $params ? ($url . '?' . http_build_query($params)) : $url;
+            }
+            curl_setopt_array($ch, $opts);
+            $cuerpo = curl_exec($ch);
+            $codigo = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+            $error  = curl_error($ch);
+            curl_close($ch);
+            return [$cuerpo, $codigo, $error];
+        };
+
+        list($cuerpo, $codigo, $error) = $intenta($metodo);
+
+        // ── LOG DE ENTRADA · qué respondió ──
+        // Si el intermediario rechaza la petición, aquí se ve el JSON
+        // exacto que devolvió. Si la mandó a Emida, aquí se ve el XML
+        // (o el JSON con los códigos) que devolvió el proveedor. En
+        // ambos casos es lo que hay que mirar cuando algo falla.
+        error_log('[LibertyFin] proxy ' . $script . ' ← '
+            . mb_substr(is_string($cuerpo) ? $cuerpo : json_encode($cuerpo), 0, 800));
+
+        // Si el script rechaza el método, se prueba el otro.
+        if (is_string($cuerpo) && $cuerpo !== '') {
+            $j = json_decode($cuerpo, true);
+            if (is_array($j) && !empty($j['message'])
+                && stripos($j['message'], 'método') !== false
+                && stripos($j['message'], 'permitido') !== false) {
+                $otro = $metodo === 'POST' ? 'GET' : 'POST';
+                list($cuerpo, $codigo, $error) = $intenta($otro);
+            }
+        }
 
         if ($cuerpo === false) {
             return ['ok' => false, 'error' => 'No se pudo llamar al intermediario: ' . $error];
@@ -83,11 +144,52 @@ final class Emida
         if ($codigo >= 400) {
             return ['ok' => false, 'error' => 'El intermediario respondió ' . $codigo];
         }
+
         $j = json_decode($cuerpo, true);
-        return ['ok' => true, 'datos' => $j === null ? $cuerpo : $j, 'crudo' => $cuerpo];
+
+        // No es JSON. Probablemente HTML de debug, como get_products.php.
+        if ($j === null) {
+            return ['ok' => true, 'datos' => $cuerpo, 'crudo' => $cuerpo];
+        }
+
+        if (is_array($j) && isset($j['success']) && $j['success'] === false) {
+            // ¿Trae códigos de Emida? Entonces la transacción SÍ llegó
+            // al proveedor y el llamador tiene que interpretarla.
+            $tieneCodigos = false;
+            foreach (['responseCode','ResponseCode','h2hResultCode','H2HResultCode'] as $c) {
+                if (!empty($j[$c])) { $tieneCodigos = true; break; }
+            }
+            if (!$tieneCodigos && isset($j['data']) && is_array($j['data'])) {
+                foreach (['responseCode','ResponseCode','h2hResultCode','H2HResultCode'] as $c) {
+                    if (!empty($j['data'][$c])) { $tieneCodigos = true; break; }
+                }
+            }
+
+            if ($tieneCodigos) {
+                // No es pre-flight. Se deja pasar tal cual.
+                return ['ok' => true, 'datos' => $j, 'crudo' => $cuerpo];
+            }
+
+            // Pre-flight del intermediario. La transacción NO llegó a
+            // Emida. Se busca el mensaje en varios campos posibles.
+            $msj = null;
+            foreach (['message','mensaje','error','errorMessage','msg'] as $k) {
+                if (!empty($j[$k]) && is_string($j[$k])) { $msj = $j[$k]; break; }
+            }
+            if ($msj === null) {
+                $msj = 'respuesta del intermediario sin campo de mensaje: ' . $cuerpo;
+            }
+            return [
+                'ok'    => false,
+                'error' => 'El intermediario rechazó la petición: ' . $msj,
+                'datos' => $j,
+                'crudo' => $cuerpo,
+            ];
+        }
+
+        return ['ok' => true, 'datos' => $j, 'crudo' => $cuerpo];
     }
 
-    /** ¿El endpoint va cifrado? Se muestra en pantalla. */
     public function cifrado()
     {
         return strncasecmp((string)($this->cfg['wsdl'] ?? ''), 'https://', 8) === 0;
@@ -172,9 +274,7 @@ final class Emida
         };
 
         $agrega($r, 'Extensión SOAP de PHP', class_exists('SoapClient'),
-            class_exists('SoapClient')
-                ? 'disponible'
-                : 'falta: sin ella se puede diagnosticar pero no recargar', false);
+            class_exists('SoapClient') ? 'disponible' : 'falta', false);
         $agrega($r, 'allow_url_fopen', (bool)ini_get('allow_url_fopen'),
             ini_get('allow_url_fopen') ? 'encendido' : 'apagado: SOAP no puede leer el WSDL');
         $agrega($r, 'Dirección del WSDL', $wsdl !== '', $wsdl ?: 'sin configurar');
@@ -220,22 +320,19 @@ final class Emida
             else {
                 $agrega($r, 'El endpoint responde', false,
                     ($errstr ?: 'no contesta') . '. Emida solo acepta conexiones desde '
-                    . 'direcciones autorizadas, y la de este servidor no lo está. '
-                    . 'O pides que la autoricen, o configuras `proxy` para pasar por '
-                    . 'un servidor que sí lo esté.');
+                    . 'direcciones autorizadas.');
             }
         }
 
         $ops = $this->operacionesDelXml();
         if ($ops['ok']) {
             $n = $ops['operaciones'];
-            $agrega($r, 'Operaciones que ofrece', count($n) > 0,
-                count($n) . ' en total');
+            $agrega($r, 'Operaciones que ofrece', count($n) > 0, count($n) . ' en total');
             foreach (['saldo' => 'saldo', 'validar' => 'validar número',
                       'vender' => 'recargar', 'productos' => 'catálogo'] as $k => $rotulo) {
                 $op = $this->operacionPara($k);
                 $agrega($r, 'Operación de ' . $rotulo, (bool)$op,
-                    $op ?: 'ninguna de ' . implode(', ', self::OPERACIONES[$k] ?? []) . ' está en el WSDL',
+                    $op ?: 'ninguna de ' . implode(', ', self::OPERACIONES[$k] ?? []) . ' está',
                     false);
             }
         } else {
@@ -343,9 +440,6 @@ final class Emida
         return $o['ok'] ? implode(', ', $o['operaciones']) : ('no se pudieron leer: ' . $o['error']);
     }
 
-    /**
-     * El catálogo de productos del proveedor.
-     */
     public function catalogo()
     {
         if ($this->porProxy()) {
@@ -353,20 +447,20 @@ final class Emida
             $r = $this->proxy($script, [
                 'terminal' => $this->cfg['terminal'] ?? '',
                 'clerk'    => $this->cfg['clerk']    ?? '',
-            ]);
+            ], 'GET');
 
-            if ($r['ok']) {
-                $datos = is_array($r['datos']) ? $r['datos'] : self::deXml($r['crudo']);
-                return ['ok' => true, 'via' => 'intermediario',
-                        'productos' => self::normalizar($datos)];
+            if (!$r['ok']) {
+                if (strpos($r['error'], '404') !== false) {
+                    return ['ok' => false, 'sin_script' => true, 'error' =>
+                        'El intermediario no tiene el script del catálogo (' . $script . '). '
+                      . 'Mientras lo suben, puedes pegar el catálogo a mano.'];
+                }
+                return $r;
             }
-            if (strpos($r['error'], '404') !== false) {
-                return ['ok' => false, 'sin_script' => true, 'error' =>
-                    'El intermediario no tiene el script del catálogo (' . $script . '). '
-                  . 'Ahí solo están get_balance.php, pinDistSale.php y lookup_transaction.php. '
-                  . 'Mientras lo suben, puedes pegar el catálogo a mano.'];
-            }
-            return $r;
+
+            $datos = is_array($r['datos']) ? $r['datos'] : self::deXml($r['crudo']);
+            return ['ok' => true, 'via' => 'intermediario',
+                    'productos' => self::normalizar($datos)];
         }
         try {
             $op = $this->operacionPara('productos');
@@ -382,34 +476,10 @@ final class Emida
         }
     }
 
-    /**
-     * Quita la envoltura HTML del intermediario.
-     *
-     * EL INTERMEDIARIO DEVUELVE UNA PÁGINA DE DEBUG, NO XML
-     *
-     * En vez del sobre SOAP a secas, devuelve:
-     *
-     *   <h3>HTTP Code: 200</h3><h3>Respuesta del servidor:</h3>
-     *   <pre>&lt;?xml version=&quot;1.0&quot; ...&gt;...&lt;/soapenv:Envelope&gt;
-     *   </pre>
-     *
-     * SE HACE CON strpos, NO CON preg_match.
-     *
-     * El cuerpo pesa alrededor de 1 MB, y `.*?` no codicioso sobre ese
-     * tamaño revienta el pcre.backtrack_limit de PHP (1 000 000 pasos
-     * por defecto). Cuando eso pasa, preg_match NO devuelve 0: devuelve
-     * false, y el código cree que no hay <pre> cuando sí lo hay. Por eso
-     * el primer intento cayó al caso 2, arrastró el </pre> final al XML
-     * y el parser falló con "Extra content at the end of the document".
-     *
-     * strpos y substr no tienen límite de backtracking: recorren el
-     * string una vez y ya.
-     */
     private static function desenvolver($cuerpo)
     {
         if (!is_string($cuerpo) || trim($cuerpo) === '') return '';
 
-        // Caso 0 · ya es XML limpio.
         $ini = ltrim($cuerpo);
         if (strncmp($ini, '<?xml', 5) === 0
             || stripos($ini, '<soapenv:Envelope') === 0
@@ -417,23 +487,18 @@ final class Emida
             return $cuerpo;
         }
 
-        // ¿Hay <pre>?
         $p = stripos($cuerpo, '<pre');
         if ($p === false) {
-            // Caso 3 · escapado sin <pre>.
             if (strpos($cuerpo, '&lt;') !== false) {
                 return html_entity_decode($cuerpo, ENT_QUOTES | ENT_HTML5, 'UTF-8');
             }
             return $cuerpo;
         }
 
-        // Saltar la etiqueta de apertura <pre ...> (o <pre>).
         $ini = strpos($cuerpo, '>', $p);
         if ($ini === false) return $cuerpo;
         $ini++;
 
-        // Buscar el </pre>. Si no está, tomar hasta el final. El script
-        // del intermediario se corta antes de cerrarlo.
         $fin = stripos($cuerpo, '</pre>', $ini);
         $trozo = $fin === false
             ? substr($cuerpo, $ini)
@@ -442,23 +507,6 @@ final class Emida
         return html_entity_decode($trozo, ENT_QUOTES | ENT_HTML5, 'UTF-8');
     }
 
-    /**
-     * Convierte la respuesta del intermediario a una lista de productos.
-     *
-     * DOS ENVOLTORIOS, NO UNO
-     *
-     *  1. La página HTML del intermediario (<h3>…<pre>…). Se quita con
-     *     desenvolver().
-     *  2. El sobre SOAP del proveedor, donde el contenido real va como
-     *     CADENA XML escapada dentro de <return>:
-     *
-     *        <return>&lt;ProductFlowInfoServiceResponse&gt;…
-     *                &lt;Products&gt;&lt;Product&gt;…&lt;/Product&gt;…
-     *
-     *     Para SimpleXML ese <return> es un STRING, no un árbol. Hay que
-     *     desescaparlo y parsearlo otra vez o los productos se quedan
-     *     dentro de la cadena y se pierden.
-     */
     private static function deXml($xml)
     {
         $xml = self::desenvolver($xml);
@@ -469,8 +517,6 @@ final class Emida
         libxml_use_internal_errors($prev);
         if ($sx === false) return [];
 
-        // Sacar el <return> del sobre, sin pelearse con los namespaces
-        // (local-name() ignora el prefijo, que cambia entre versiones).
         $ret = $sx->xpath('//*[local-name()="return"]');
         if ($ret && isset($ret[0])) {
             $prev = libxml_use_internal_errors(true);
@@ -478,8 +524,6 @@ final class Emida
             libxml_use_internal_errors($prev);
 
             if ($interno !== false) {
-                // El proveedor manda su propio ResponseCode aquí dentro.
-                // Se deja en el log para no perderlo.
                 $rc = $interno->xpath('//*[local-name()="ResponseCode"]');
                 $cod = $rc ? trim((string)$rc[0]) : '';
                 if ($cod !== '' && $cod !== '00') {
@@ -489,7 +533,6 @@ final class Emida
                     return [];
                 }
 
-                // Los productos viven en Products/Product.
                 $prod = $interno->xpath('//*[local-name()="Products"]/*[local-name()="Product"]');
                 if (!$prod) $prod = $interno->xpath('//*[local-name()="Product"]');
                 if ($prod && count($prod) > 0) {
@@ -498,18 +541,51 @@ final class Emida
             }
         }
 
-        // Sin <return>, se intenta como XML normal por si cambia el
-        // formato. No estorba y evita romper si pasa.
         $cuerpo = $sx;
         $env = $sx->children('http://schemas.xmlsoap.org/soap/envelope/');
         if (isset($env->Body)) $cuerpo = $env->Body;
         return self::aLista(json_decode(json_encode($cuerpo), true));
     }
 
-    /**
-     * Escarba un array anidado hasta encontrar una lista de productos.
-     * Devuelve la primera lista de arrays asociativos que aparezca.
-     */
+    private static function desdeProxy($respuesta)
+    {
+        $xml = self::desenvolver($respuesta);
+        if ($xml === '') return [];
+
+        libxml_use_internal_errors(true);
+        $sx = simplexml_load_string($xml);
+        libxml_clear_errors();
+        libxml_use_internal_errors(false);
+        if ($sx === false) return [];
+
+        $ret = $sx->xpath('//*[local-name()="return"]');
+        if ($ret && isset($ret[0])) {
+            libxml_use_internal_errors(true);
+            $sx2 = simplexml_load_string((string)$ret[0]);
+            libxml_clear_errors();
+            libxml_use_internal_errors(false);
+            if ($sx2 !== false) {
+                return json_decode(json_encode($sx2), true) ?: [];
+            }
+        }
+        return json_decode(json_encode($sx), true) ?: [];
+    }
+
+    private static function buscar($nodo, array $claves)
+    {
+        if (!is_array($nodo)) return null;
+        foreach ($nodo as $k => $v) {
+            if (in_array($k, $claves, true) && !is_array($v)) return $v;
+        }
+        foreach ($nodo as $v) {
+            if (is_array($v)) {
+                $r = self::buscar($v, $claves);
+                if ($r !== null) return $r;
+            }
+        }
+        return null;
+    }
+
     private static function aLista($nodo, $profundidad = 0)
     {
         if ($profundidad > 6 || !is_array($nodo)) return [];
@@ -530,15 +606,6 @@ final class Emida
         return [];
     }
 
-    /**
-     * Pone el catálogo en una forma estable.
-     *
-     * El proveedor devuelve nombres de campo distintos según la operación
-     * y la versión. Se aceptan todos los que se han visto —incluidos los
-     * que manda Emida hoy: ProductCategory, ProductUFee, FlowType,
-     * AmountMin, AmountMax— y se traducen a uno solo, para que el resto
-     * del sistema no tenga que saber cuál vino.
-     */
     private static function normalizar($datos)
     {
         $lista = [];
@@ -559,10 +626,6 @@ final class Emida
                 $monto = self::campo($p, ['Amount','amount','monto','Price','FaceValue']);
                 $flow  = strtoupper((string)self::campo($p, ['FlowType','flowType']));
 
-                // FlowType decide el tipo sin ambigüedad:
-                //   A = Venta Directa  → monto fijo, se vende tal cual
-                //   B = Consulta/Pago  → monto variable, primero se consulta
-                // Si no viene, se deduce: min/max > 0 o sin monto = variable.
                 if ($flow === 'B')      $tipo = 'consulta';
                 elseif ($flow === 'A')  $tipo = 'directa';
                 else $tipo = (self::num($min) > 0 || self::num($max) > 0 || self::num($monto) <= 0)
@@ -598,7 +661,6 @@ final class Emida
         return (float)preg_replace('/[^0-9.\-]/', '', (string)$v);
     }
 
-    /** El saldo disponible con el proveedor. */
     public function saldo()
     {
         if ($this->porProxy()) {
@@ -607,11 +669,11 @@ final class Emida
                 'password' => $this->cfg['clave'] ?? '',
             ]);
             if (!$r['ok']) return $r;
-            $d = $r['datos'];
+            $d = is_array($r['datos'])
+                ? $r['datos']
+                : self::desdeProxy(is_string($r['crudo']) ? $r['crudo'] : '');
             return ['ok' => true, 'via' => 'intermediario',
-                    'saldo' => is_array($d)
-                        ? ($d['balance'] ?? $d['Balance'] ?? $d['saldo'] ?? null)
-                        : $d,
+                    'saldo' => self::buscar($d, ['balance','Balance','saldo','Saldo','Amount']),
                     'crudo' => $d];
         }
         try {
@@ -619,8 +681,7 @@ final class Emida
             if (!$op) {
                 return ['ok' => false, 'error' =>
                     'Este WSDL no tiene una operación de saldo. Las que ofrece son: '
-                    . $this->nombresDisponibles()
-                    . '. Dime cuál corresponde y la conecto.'];
+                    . $this->nombresDisponibles()];
             }
             $r = $this->cliente()->__soapCall($op, [$this->base()]);
             return ['ok' => true, 'saldo' => $r->Balance ?? $r->balance ?? $r->Amount ?? null,
@@ -633,13 +694,6 @@ final class Emida
         }
     }
 
-    /**
-     * Valida un número antes de cobrarle al cliente.
-     *
-     * Se consulta ANTES de aceptar el dinero. Si se cobrara primero y el
-     * número resultara inválido, habría que devolver efectivo de una caja
-     * que ya cuadró.
-     */
     public function validar($numero, $productoId)
     {
         try {
@@ -660,10 +714,22 @@ final class Emida
     /**
      * Ejecuta la recarga.
      *
-     * `SalesId` es un identificador propio que el proveedor usa para
-     * detectar duplicados: si la red se cae después de enviar y se
-     * reintenta con el mismo, Emida devuelve 294 en vez de recargar dos
-     * veces. Por eso lo recibe y no lo genera él.
+     * PIN_DIST_SALE.PHP ESPERA ESTOS CAMPOS, EN JSON, POR POST
+     *
+     *   terminalId      → cfg['terminal']
+     *   clerkId         → cfg['clerk']
+     *   productId       → productoId
+     *   accountId       → número del cliente
+     *   amount          → monto
+     *   invoiceNo       → salesId (nuestro identificador de duplicados;
+     *                     el script lo llama "invoiceNo", no "salesId")
+     *   tipo_operacion  → "recarga"
+     *
+     * El processor del intermediario solo usa terminalId y clerkId para
+     * autenticarse contra Emida (mira EmidaTransactionProcessor.php:
+     * no recibe usuario ni contraseña). Por eso los cambios de
+     * `usuario`/`clave`/`merchant_id` en la config no mueven nada en el
+     * camino de venta.
      */
     public function recargar($numero, $productoId, $monto, $salesId)
     {
@@ -673,27 +739,38 @@ final class Emida
 
         if ($this->porProxy()) {
             $r = $this->proxy($this->cfg['proxy_venta'] ?? 'pinDistSale.php', [
-                'username'  => $this->cfg['usuario'] ?? '',
-                'password'  => $this->cfg['clave'] ?? '',
-                'accountId' => $numero,
-                'productId' => $productoId,
-                'amount'    => number_format((float)$monto, 2, '.', ''),
-                'salesId'   => $salesId,
-            ]);
+                'terminalId'     => $this->cfg['terminal'] ?? '',
+                'clerkId'        => $this->cfg['clerk']    ?? '',
+                'productId'      => $productoId,
+                'accountId'      => $numero,
+                'amount'         => number_format((float)$monto, 2, '.', ''),
+                'invoiceNo'      => $salesId,
+                'tipo_operacion' => 'recarga',
+            ], 'POST');
+
             if (!$r['ok']) return $r;
-            $d = is_array($r['datos']) ? $r['datos'] : [];
-            $resp = (string)($d['responseCode'] ?? $d['ResponseCode'] ?? '');
-            $h2h  = (string)($d['h2hResultCode'] ?? $d['H2HResultCode'] ?? '');
+
+            $d = is_array($r['datos'])
+                ? $r['datos']
+                : self::desdeProxy(is_string($r['crudo']) ? $r['crudo'] : '');
+
+            $resp  = (string)(self::buscar($d, ['ResponseCode','responseCode']) ?? '');
+            $h2h   = (string)(self::buscar($d, ['H2HResultCode','h2hResultCode']) ?? '');
+            $folio = self::buscar($d, ['CarrierControlNo','carrierControlNo',
+                                       'TransactionId','transactionId']);
+
             if ($resp === '' && $h2h === '') {
+                error_log('[LibertyFin] pinDistSale sin códigos. Crudo: '
+                    . mb_substr(is_string($r['crudo']) ? $r['crudo'] : '', 0, 800));
                 return ['ok' => false, 'incierta' => true,
-                        'error' => 'El intermediario respondió algo que no se entiende. '
+                        'error' => 'La respuesta del proveedor no trae los códigos esperados. '
                                  . 'La recarga PUDO haber salido: consulta el saldo antes de reintentar.',
-                        'crudo' => $r['datos']];
+                        'crudo' => $d];
             }
             if (self::exitosa($resp, $h2h)) {
-                return ['ok' => true, 'via' => 'intermediario', 'duplicada' => $h2h === '294',
-                        'folio' => $d['carrierControlNo'] ?? $d['transactionId'] ?? null,
-                        'crudo' => $d];
+                return ['ok' => true, 'via' => 'intermediario',
+                        'duplicada' => $h2h === '294',
+                        'folio' => $folio, 'crudo' => $d];
             }
             return ['ok' => false, 'error' => self::mensaje($resp, $h2h),
                     'codigo' => $resp, 'h2h' => $h2h];
@@ -704,8 +781,7 @@ final class Emida
             if (!$op) {
                 return ['ok' => false, 'error' =>
                     'Este WSDL no tiene una operación de recarga. Las que ofrece son: '
-                    . $this->nombresDisponibles()
-                    . '. Dime cuál es la de vender y la conecto.'];
+                    . $this->nombresDisponibles()];
             }
             $r = $this->cliente()->__soapCall($op, [array_merge($this->base(), [
                 'AccountId' => $numero,
@@ -738,14 +814,10 @@ final class Emida
         }
     }
 
-    /**
-     * Según el proveedor: ResponseCode "00" y H2H "0".
-     * El 294 también cuenta como éxito: es una recarga que ya se hizo,
-     * no una que falló.
-     */
     public static function exitosa($responseCode, $h2h)
     {
-        return $responseCode === '00' && ($h2h === '0' || $h2h === '294');
+        if ($responseCode !== '00') return false;
+        return $h2h === '' || $h2h === '0' || $h2h === '294';
     }
 
     public static function mensaje($responseCode, $h2h)
