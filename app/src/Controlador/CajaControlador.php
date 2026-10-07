@@ -31,7 +31,9 @@ final class CajaControlador
             'titulo'    => 'Caja',
             'icono'     => 'caja',
             'subtitulo' => 'Venta nueva · ' . ($_SESSION['sucursal_nombre'] ?? 'Matriz'),
-            'servicios' => $cat->servicios($suc, $area, $buscar),
+            // Se cargan TODOS: la categoría y la búsqueda filtran en el navegador,
+            // sin recargar, para no perder el ticket que se va armando.
+            'servicios' => $cat->servicios($suc, '', '', 1500),
             'areas'     => $cat->areas(),
             'metodos'   => (new \LibertyFin\Datos\ConfigRepo($db))->metodosDisponibles(),
             // Quien va a HACER el trabajo: los COLABORADORES, agrupados
@@ -136,9 +138,37 @@ final class CajaControlador
         $ampliar = (int)($_POST['ampliar_venta'] ?? 0);
         if ($ampliar > 0) return $this->ampliar($db, $ampliar, $ticket);
 
+        // EL CLIENTE. Se eligió de la lista (id), o se escribió un nombre.
+        // Un nombre escrito se enlaza al cliente que ya tenga ese nombre
+        // exacto o, si no existe, se crea: antes ese texto se descartaba y
+        // la venta salía sin cliente, sin avisar.
+        $clienteId = (int)($_POST['cliente_id'] ?? 0) ?: null;
+        if (!$clienteId) {
+            $nombreCli = trim((string)($_POST['cliente_nombre'] ?? ''));
+            if ($nombreCli !== '') {
+                try {
+                    $clienteId = $this->clientePorNombre($db, $nombreCli);
+                } catch (\InvalidArgumentException $e) {
+                    $this->volver($e->getMessage(), 'error');
+                } catch (\Throwable $e) {
+                    error_log('[LibertyFin] cliente al cobrar: ' . $e->getMessage());
+                    $this->volver('No se pudo guardar el cliente.', 'error');
+                }
+            }
+        }
+
+        // ¿Se pidió un método de liga (tarjeta, SPEI, efectivo en tienda)?
+        // Y si sí: ¿se marcó "Ya me pagaron", o no hay proveedor con qué
+        // generarla? En esos casos NO se llama al proveedor y el cobro
+        // pasa como pagado, con el método que se eligió.
+        $enLineaPedida = self::formaEnLinea($_POST['como_paga'] ?? '');
+        $sinLiga = $enLineaPedida !== ''
+                && (!empty($_POST['sin_liga'])
+                    || !\LibertyFin\Servicio\Integraciones::activa('spei'));
+
         try {
             $r = (new RegistrarVenta($db))->cobrar($ticket, [
-                'cliente_id'     => (int)($_POST['cliente_id'] ?? 0) ?: null,
+                'cliente_id'     => $clienteId,
                 'usuario_id'     => $_SESSION['usuario_id'] ?? null,
                 'sucursal_id'    => $_SESSION['sucursal_id'] ?? null,
                 // El turno sale de la base. Leerlo de la sesión dejaba
@@ -153,7 +183,11 @@ final class CajaControlador
                 // ademas dejaba la venta liquidada: al ir a generar el
                 // cobro no quedaba saldo que cobrar y el sistema
                 // contestaba "no hizo falta".
-                'anticipo'       => self::formaEnLinea($_POST['como_paga'] ?? '')
+                //
+                // SALVO "YA ME PAGARON": ahí el cliente sí pagó (transfirió
+                // o pagó por otro lado) y no se genera liga, así que lo que
+                // se captura como anticipo es lo que entró.
+                'anticipo'       => ($enLineaPedida && !$sinLiga)
                                     ? 0.0 : (float)($_POST['anticipo'] ?? 0),
                 // El nombre se guarda además del id: si esa persona se va y su
                 // usuario se desactiva, el reporte de hace seis meses tiene que
@@ -176,8 +210,8 @@ final class CajaControlador
 
         // Pago en linea: se genera el cobro y se devuelven los datos
         // para el modal, sin salir de la caja.
-        $enLinea = self::formaEnLinea($_POST['como_paga'] ?? '');
-        if ($enLinea && \LibertyFin\Servicio\Integraciones::activa('spei')) {
+        $enLinea = $enLineaPedida;
+        if ($enLinea && !$sinLiga && \LibertyFin\Servicio\Integraciones::activa('spei')) {
             return $this->conLiga($db, $r, $enLinea);
         }
 
@@ -200,6 +234,20 @@ final class CajaControlador
 
         header('Location: /ventas/' . $r['id'] . '?nueva=1');
         exit;
+    }
+
+    /**
+     * El id del cliente con ese nombre exacto; si no existe, lo crea solo con
+     * el nombre (lo demás se completa después en Clientes).
+     * @throws \InvalidArgumentException si el nombre no es válido
+     */
+    private function clientePorNombre($db, $nombre)
+    {
+        $st = $db->prepare("SELECT id FROM clientes WHERE nombre = ? ORDER BY id LIMIT 1");
+        $st->execute([$nombre]);
+        $id = $st->fetchColumn();
+        if ($id) return (int)$id;
+        return (new \LibertyFin\Datos\ClienteRepo($db))->crear(['nombre' => $nombre]);
     }
 
     private function tokenValido()
@@ -343,7 +391,9 @@ final class CajaControlador
         }
 
         $api = new \LibertyFin\Servicio\LigaPago(\LibertyFin\Servicio\Integraciones::de('spei'));
-        $semilla = '9' . str_pad((string)$r['id'], 7, '0', STR_PAD_LEFT) . date('ymdHi');
+
+       
+        $semilla = \LibertyFin\Servicio\LigaPago::semilla((int)$r['id']);
 
         $g = $api->generar([
             'monto' => $saldo, 'metodo' => $forma,

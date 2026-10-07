@@ -140,6 +140,22 @@ final class LigaPago
     }
 
     /**
+     * Deja el método con su nombre canónico.
+     *
+     * `todos` es un alias de `tarjeta` que quedó en registros viejos y
+     * en el formulario de Ligas. Guardarlo así en la base hacía que
+     * hubiera dos valores para la MISMA forma de pago —`tarjeta` desde
+     * Caja y `todos` desde Ligas— y luego las consultas por método se
+     * volvían incómodas: había que acordarse de incluir los dos.
+     */
+    public static function normalizar($metodo)
+    {
+        $m = trim((string)$metodo);
+        if ($m === 'todos') return 'tarjeta';
+        return isset(self::METODOS[$m]) ? $m : 'tarjeta';
+    }
+
+    /**
      * ¿Se le puede preguntar al proveedor por esta forma?
      *
      * La caja lo usa para decidir si vale la pena seguir consultando o
@@ -149,6 +165,56 @@ final class LigaPago
     public static function consultable($metodo)
     {
         return isset(self::CONSULTA[self::servicioDe($metodo)]);
+    }
+
+    /**
+     * La semilla con la que se arma la referencia de un cobro.
+     *
+     * ──────────────────────────────────────────────────────────
+     * POR QUÉ ESTO VIVE AQUÍ Y NO EN CADA CONTROLADOR
+     *
+     * Caja y Ligas armaban su propia semilla, cada una a su manera, y
+     * la de Caja estaba mal.
+     *
+     * El proveedor pide que `Id` sea Numérico(10). `generar()` lo
+     * recorta con `substr(..., -10)` para que no falle cuando la
+     * semilla viene más larga. Ligas mandaba 9 dígitos: sobreviven
+     * íntegros al recorte. Caja mandaba 18 —`'9'` + venta de 7 +
+     * `date('ymdHi')` de 10— y los últimos diez eran SOLO la fecha:
+     *
+     *   9 0001234 202610071614
+     *              └────┬───┘
+     *              esto es lo único que llegaba como Id
+     *
+     * Dos ventas en el mismo minuto compartían `Id`. Y la `Reference`,
+     * recortada a 15 de esos mismos 18, arrastraba la cola del id de
+     * venta. El proveedor contestaba el código 15 —"El formato del ID
+     * es incorrecto"—, que el mapa traducía como "este comercio no
+     * está vinculado a la integración" y mandaba a revisar el
+     * `BusinessID`, que estaba bien.
+     *
+     * Aquí hay una sola receta para los dos lados: 9 dígitos, para que
+     * el recorte a 10 sea inocuo.
+     * ──────────────────────────────────────────────────────────
+     *
+     * Si hay venta, la semilla la lleva dentro: reintentar devuelve la
+     * MISMA liga en vez de crear otra, que es justo lo que se quiere.
+     * Sin venta, lleva la marca de tiempo y algo de azar para no
+     * chocar con la de otro cobro del mismo segundo.
+     */
+    public static function semilla($ventaId = 0)
+    {
+        $ventaId = (int)$ventaId;
+        if ($ventaId > 0) {
+            // El 9 va delante para que la referencia empiece con un
+            // dígito distinto al de las que se generan por tiempo:
+            // facilita reconocerlas en el panel del proveedor.
+            return substr(
+                '9' . str_pad((string)$ventaId, 6, '0', STR_PAD_LEFT) . date('ymdHi'),
+                0, 9
+            );
+        }
+        return substr(date('ymdHis') . random_int(100000, 999999), 0, 9);
     }
 
     /**
@@ -187,6 +253,25 @@ final class LigaPago
         // `escuela_id` queda como respaldo para quien venía de Paga la
         // Escuela y todavía no mueve su configuración.
         return $b !== '' ? $b : trim((string)($this->cfg['escuela_id'] ?? ''));
+    }
+
+    /**
+     * El IntegrationID de ESTE servicio.
+     *
+     * En Paga de Todo cada forma de pago se contrata por separado y
+     * cada una puede traer su propio IntegrationID, aunque compartan
+     * BusinessID. Mandar el de SPEI al servicio de tarjeta devuelve el
+     * código 26 —"este comercio no está vinculado a la integración"—,
+     * que suena a problema del comercio y es en realidad de la
+     * integración.
+     *
+     * `integracion_id` sigue siendo el valor por omisión, para no
+     * romper a quien tiene un solo producto contratado.
+     */
+    private function integracion($servicio)
+    {
+        $propio = trim((string)($this->cfg['integracion_id_' . $servicio] ?? ''));
+        return $propio !== '' ? $propio : (string)($this->cfg['integracion_id'] ?? '');
     }
 
     /**
@@ -323,7 +408,7 @@ final class LigaPago
         $monto = round((float)($d['monto'] ?? 0), 2);
         if ($monto <= 0) { $this->ultimoError = 'El monto tiene que ser mayor a cero'; return null; }
 
-        $metodo   = isset(self::METODOS[$d['metodo'] ?? '']) ? $d['metodo'] : 'tarjeta';
+        $metodo   = self::normalizar($d['metodo'] ?? 'tarjeta');
         $servicio = self::servicioDe($metodo);
         list($ruta, $campos, $devuelve) = self::SERVICIOS[$servicio];
 
@@ -351,7 +436,9 @@ final class LigaPago
         $cuerpo = [
             'User'          => $this->usuario(),
             'Password'      => $this->clave(),
-            'IntegrationID' => $this->cfg['integracion_id'],
+            // ⟵ AJUSTE: el IntegrationID va por servicio, no el mismo
+            // para los tres. Ver `integracion()`.
+            'IntegrationID' => $this->integracion($servicio),
         ];
 
         $posibles = [
@@ -360,6 +447,9 @@ final class LigaPago
             // `Id` es Numérico(10) en la documentación. Mandarle los 15
             // de la referencia devuelve el código 15, "El formato del ID
             // es incorrecto": se toman los últimos diez.
+            //
+            // Con la semilla de 9 dígitos (ver `semilla()`) el recorte
+            // es inocuo: los 9 pasan íntegros.
             'Id'             => substr((string)($d['id'] ?? $referencia), -10),
             // El proveedor corta a 40 y si se pasa, rechaza.
             'Description'    => mb_substr((string)($d['descripcion'] ?? 'Pago'), 0, 40),
@@ -454,7 +544,9 @@ final class LigaPago
         $j = $this->pegar($this->url('estado', self::CONSULTA[$servicio]), [
             'User'          => $this->usuario(),
             'Password'      => $this->clave(),
-            'IntegrationID' => $this->cfg['integracion_id'],
+            // ⟵ AJUSTE: la consulta también va contra la integración de
+            // tarjeta, no la genérica.
+            'IntegrationID' => $this->integracion($servicio),
             'BusinessID'    => $this->negocio(),
             'Reference'     => (string)$referencia,
         ]);
@@ -562,6 +654,20 @@ final class LigaPago
      *
      * Sin esto el cajero leía "22" y no había forma de saber que la
      * referencia iba con el largo equivocado.
+     *
+     * ──────────────────────────────────────────────────────────
+     * AJUSTE: EL 15 Y EL 26 SIGNIFICAN COSAS DISTINTAS
+     *
+     * El mapa venía de Paga la Escuela, donde el 15 es "comercio no
+     * vinculado". En Paga de Todo el 15 es OTRA COSA:
+     *
+     *   15  El formato del Id es incorrecto (es Numérico(10))
+     *   26  Este comercio no está vinculado a la integración
+     *
+     * Con el texto viejo, un `Id` mal recortado —que es justo lo que
+     * pasaba desde Caja— mandaba al cajero a revisar el `BusinessID`,
+     * que estaba bien, y a perder la tarde en el lugar equivocado.
+     * ──────────────────────────────────────────────────────────
      */
     const CODIGOS = [
         '00'  => 'los datos enviados vienen vacíos',
@@ -578,7 +684,7 @@ final class LigaPago
         '11'  => 'el Account trae mal el formato',
         '12'  => 'el Account ya se usó: tiene que ser único',
         '14'  => 'el formato de la fecha de vencimiento es incorrecto',
-        '15'  => 'este comercio no está vinculado a la integración',
+        '15'  => 'el ID del cobro trae mal el formato (a lo más 10 dígitos)',
         '17'  => 'falta la descripción',
         '18'  => 'el importe debe ser mínimo $50.00 y máximo $15,000.00',
         '19'  => 'el formato del importe es incorrecto',

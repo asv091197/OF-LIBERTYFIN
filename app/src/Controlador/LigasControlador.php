@@ -56,6 +56,7 @@ final class LigasControlador
     }
 
     /** Genera una liga para una venta con saldo, o por un monto suelto. */
+    /** Genera una liga para una venta con saldo, o por un monto suelto. */
     public function generar()
     {
         if (!$this->token()) $this->a('No se pudo verificar el formulario.', 'error');
@@ -85,15 +86,24 @@ final class LigasControlador
             if ($desc === '') $this->a('Escribe de qué es el cobro.', 'error');
         }
 
-        $metodo = $_POST['metodo'] ?? 'todos';
+        // ⟵ AJUSTE: el método se normaliza al nombre canónico.
+        //
+        // El `<select>` de Ligas ofrece `todos` —alias viejo de tarjeta—
+        // como opción por omisión. Guardarlo así en la base dejaba dos
+        // valores distintos para la MISMA forma de pago: `tarjeta` desde
+        // Caja y `todos` desde aquí. Luego las consultas por método
+        // había que escribirlas incluyendo los dos.
+        $metodo = LigaPago::normalizar($_POST['metodo'] ?? 'tarjeta');
         $api = new LigaPago($cfg);
 
-        // La referencia lleva la venta dentro cuando la hay: si se
-        // reintenta, el proveedor devuelve la MISMA liga en vez de crear
-        // otra, que es justo lo que se quiere.
-        $semilla = $ventaId
-    ? substr('9' . str_pad((string)$ventaId, 6, '0', STR_PAD_LEFT) . date('ymdHi'), 0, 9)
-    : substr(date('ymdHis') . random_int(100000, 999999), 0, 9);
+        // ⟵ AJUSTE: la semilla sale de LigaPago::semilla().
+        //
+        // Aquí ya se usaba el formato bueno —9 dígitos, para que el
+        // recorte a 10 que hace `generar()` sobre el Id sea inocuo— y
+        // por eso desde esta pantalla la liga de tarjeta SÍ se genera.
+        // Ahora los dos lados usan la misma función, para que el
+        // arreglo de Caja no dependa de copiar bien una línea.
+        $semilla = \LibertyFin\Servicio\LigaPago::semilla($ventaId);
 
         $r = $api->generar([
             'monto' => $monto, 'descripcion' => $desc, 'metodo' => $metodo,

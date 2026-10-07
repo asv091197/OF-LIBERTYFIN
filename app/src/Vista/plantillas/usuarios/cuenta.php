@@ -521,18 +521,18 @@ $pe = function ($n) { return D::pesos($n); };
 
     /* Avisos: lo que cambia respecto a hoy. */
     var av = [];
-    if (esActual) {
-      av.push('Estás <b>renovando tu plan actual</b>: los días que te queden se suman al nuevo periodo.');
-    } else {
-      av.push('Estás <b>cambiando de plan</b>: el cobro aplica desde ahora y reemplaza al anterior.');
-    }
-    if (metodoActivo === '_spei') {
-      av.push('Se te dará la <b>CLABE y la referencia</b> al confirmar. El plan se activa cuando validemos la transferencia.');
-    } else if (metodoActivo === '_tienda') {
-      av.push('El pago en efectivo se registra en tienda. El plan se activa al validar el comprobante.');
-    } else {
-      av.push('Se procesará el <b>cargo a la tarjeta</b> en cuanto confirmes.');
-    }
+if (esActual) {
+    av.push('Estás <b>renovando tu plan actual</b>: los días que te queden se suman al nuevo periodo.');
+} else {
+    av.push('Estás <b>cambiando de plan</b>: el nuevo plan reemplazará al anterior una vez confirmado el pago.');
+}
+if (metodoActivo === '_spei') {
+    av.push('Al confirmar, recibirás la <b>CLABE y la referencia</b> para realizar tu transferencia. Tu plan se actualizará automáticamente una vez confirmado el pago.');
+} else if (metodoActivo === '_tienda') {
+    av.push('Recibirás las instrucciones para realizar tu pago en <b>efectivo</b>. Tu plan se actualizará automáticamente una vez confirmado el pago.');
+} else {
+    av.push('Al confirmar el pago, se procesará el <b>cargo a tu tarjeta</b> y tu plan se actualizará automáticamente.');
+}
 
     document.getElementById('confAvisos').innerHTML =
       av.map(function(a){ return '<p>' + a + '</p>'; }).join('');
