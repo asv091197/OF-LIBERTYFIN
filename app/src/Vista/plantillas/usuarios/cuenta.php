@@ -279,10 +279,15 @@ if (!empty($catalogo)):
 <?php endif; ?>
 
 <?php /* ═══ PLANES ═══
-   Tarjetas de planes con selector Mensual / Anual. El precio que se ve
-   cambia en el navegador, pero lo que se cobra lo calcula el servidor a
-   partir de plan + periodo (ver PlanRepo::solicitar): el navegador nunca
-   manda un monto. */
+   Tarjetas de planes con selector Mensual / Anual.
+
+   El flujo al pulsar Seleccionar/Renovar es de dos pasos:
+     1) un modal pregunta cómo paga (Tarjeta / SPEI / Efectivo);
+     2) al elegir, se pinta una confirmación con avisos, total y
+        resumen, antes de mandar el formulario.
+
+   El navegador nunca manda un monto: el precio se recalcula en el
+   servidor a partir de plan + periodo (PlanRepo::solicitar). */
 $desc = (float)($catalogo['descuento_anual'] ?? 0);
 $pe = function ($n) { return D::pesos($n); };
 ?>
@@ -327,10 +332,19 @@ $pe = function ($n) { return D::pesos($n); };
           <?php endforeach; ?>
         </div>
 
-        <form method="post" action="/cuenta/plan">
+        <?php /* Los data-* son lo que el modal lee para armar la confirmación.
+                 El navegador NUNCA manda el monto: solo muestra. */ ?>
+        <form method="post" action="/cuenta/plan" class="lf-plan-form"
+              data-nombre="<?= P::e($pl['nombre']) ?>"
+              data-mensual="<?= $pl['periodos']['mensual']['por_mes'] ?>"
+              data-anual="<?= $pl['periodos']['anual']['por_mes'] ?>"
+              data-meses-mensual="1"
+              data-meses-anual="12"
+              data-es-actual="<?= $actual ? '1' : '0' ?>">
           <input type="hidden" name="token" value="<?= P::e($token) ?>">
           <input type="hidden" name="plan" value="<?= P::e($clave) ?>">
           <input type="hidden" name="periodo" value="mensual" data-periodo-campo>
+          <input type="hidden" name="como_paga" class="lf-como-paga" value="">
           <button class="btn <?= ($pl['popular'] || $actual) ? 'btn-primary' : 'btn-secondary' ?>" type="submit">
             <?= $actual ? 'Renovar' : 'Seleccionar' ?></button>
         </form>
@@ -339,7 +353,72 @@ $pe = function ($n) { return D::pesos($n); };
   </div>
 </section>
 
+<?php /* ═══ MODAL DE COBRO ═══
+   Dos vistas dentro de la misma caja:
+     - "metodo": elegir Tarjeta / SPEI / Efectivo.
+     - "conf":   confirmación con avisos, items, total y datos,
+                 con los mismos nombres que usa abrirConf() en Caja
+                 (.lf-conf-av, .lf-conf-items, .lf-conf-total,
+                 .lf-conf-datos) para que se vea idéntico. */ ?>
+<div class="lf-modal" id="lfModalPago" hidden>
+  <div class="caja" role="dialog" aria-modal="true" aria-labelledby="lfModalTit">
+
+    <!-- Paso 1: elegir método -->
+    <div data-vista="metodo">
+      <header>
+        <div>
+          <h2 id="lfModalTit">¿Cómo vas a pagar?</h2>
+          <p>Elige el método para continuar con tu plan.</p>
+        </div>
+        <button type="button" class="cerrar" data-cerrar aria-label="Cerrar">×</button>
+      </header>
+      <div class="cuerpo">
+        <div class="lf-metodos" style="padding:0">
+          <label class="form-label">¿Cómo paga?</label>
+          <div class="ops">
+            <button type="button" class="m" data-metodo="_tarjeta">
+              <?= W::icono('cobro','17px') ?>
+              <span>Tarjeta</span>
+            </button>
+            <button type="button" class="m" data-metodo="_spei">
+              <?= W::icono('venta','17px') ?>
+              <span>SPEI</span>
+            </button>
+            <button type="button" class="m" data-metodo="_tienda">
+              <?= W::icono('bolsa','17px') ?>
+              <span>Efectivo (tienda)</span>
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Paso 2: confirmación -->
+    <div data-vista="conf" hidden>
+      <header>
+        <div>
+          <h2>Confirmar cambio de plan</h2>
+          <p>Revisa los datos antes de continuar.</p>
+        </div>
+        <button type="button" class="cerrar" data-cerrar aria-label="Cerrar">×</button>
+      </header>
+      <div class="cuerpo">
+        <div id="confAvisos" class="lf-conf-av"></div>
+        <ul id="confItems" class="lf-conf-items"></ul>
+        <div id="confTotal" class="lf-conf-total"></div>
+        <dl id="confDatos" class="lf-conf-datos"></dl>
+      </div>
+      <footer>
+        <button type="button" id="cVolver" class="btn btn-secondary">Revisar</button>
+        <button type="button" id="cOk" class="btn btn-primary">Confirmar</button>
+      </footer>
+    </div>
+
+  </div>
+</div>
+
 <script>
+/* Selector Mensual / Anual: cambia precios y textos sin recargar. */
 (function(){
   var caja = document.getElementById('lfPlanes');
   if (!caja) return;
@@ -358,6 +437,156 @@ $pe = function ($n) { return D::pesos($n); };
   caja.querySelectorAll('.lf-periodo button').forEach(function(b){
     b.addEventListener('click', function(){ poner(b.dataset.periodo); });
   });
+})();
+
+/* Modal de cobro: método → confirmación → envío.
+   Sigue el mismo patrón que abrirConf() en Caja: avisos en
+   .lf-conf-av, items en .lf-conf-items, total en .lf-conf-total,
+   y el resumen en .lf-conf-datos. El foco cae en "Revisar" al
+   llegar a la confirmación, no en el botón de enviar. */
+(function () {
+  var modal = document.getElementById('lfModalPago');
+  if (!modal) return;
+
+  var vistaMetodo = modal.querySelector('[data-vista="metodo"]');
+  var vistaConf   = modal.querySelector('[data-vista="conf"]');
+  var formActivo  = null;
+  var metodoActivo = null;
+
+  /* --- Abrir desde cualquier tarjeta de plan --- */
+  document.querySelectorAll('.lf-plan-form').forEach(function (f) {
+    f.addEventListener('submit', function (ev) {
+      if (f.dataset.listo === '1') return;
+      ev.preventDefault();
+      formActivo = f;
+      mostrarVista('metodo');
+      modal.hidden = false;
+      document.body.classList.add('lf-modal-abierto');
+      var primero = vistaMetodo.querySelector('.m');
+      if (primero) primero.focus();
+    });
+  });
+
+  function mostrarVista(cual) {
+    vistaMetodo.hidden = (cual !== 'metodo');
+    vistaConf.hidden   = (cual !== 'conf');
+  }
+
+  function cerrar() {
+    modal.hidden = true;
+    document.body.classList.remove('lf-modal-abierto');
+    formActivo = null;
+    metodoActivo = null;
+  }
+
+  /* --- Cerrar --- */
+  modal.querySelectorAll('[data-cerrar]').forEach(function (b) {
+    b.addEventListener('click', cerrar);
+  });
+  modal.addEventListener('click', function (e) {
+    if (e.target === modal) cerrar();
+  });
+  document.addEventListener('keydown', function (e) {
+    if (e.key !== 'Escape' || modal.hidden) return;
+    /* Escape desde la confirmación vuelve al paso anterior, no cierra:
+       cerrar de golpe obliga a empezar otra vez. */
+    if (!vistaConf.hidden) { mostrarVista('metodo'); return; }
+    cerrar();
+  });
+
+  /* --- Paso 1: elegir método --- */
+  vistaMetodo.querySelectorAll('.m').forEach(function (b) {
+    b.addEventListener('click', function () {
+      if (!formActivo) return;
+      metodoActivo = b.dataset.metodo;
+      pintarConfirmacion();
+      mostrarVista('conf');
+      /* El foco va a "Revisar", igual que en Caja. */
+      document.getElementById('cVolver').focus();
+    });
+  });
+
+  /* --- Paso 2: pintar la confirmación --- */
+  function pintarConfirmacion() {
+    var f = formActivo;
+    var nombrePlan = f.dataset.nombre || '';
+    var periodo    = f.querySelector('[data-periodo-campo]').value;
+    var esActual   = f.dataset.esActual === '1';
+    var porMes     = parseFloat(f.dataset[periodo]) || 0;
+    var meses      = parseInt(f.dataset['meses' + (periodo === 'anual' ? 'Anual' : 'Mensual')], 10) || 1;
+    var total      = porMes * meses;
+
+    var etiquetaPeriodo = periodo === 'anual' ? 'Anual · 12 meses' : 'Mensual · 1 mes';
+    var etiquetaMetodo  = { _tarjeta:'Tarjeta', _spei:'SPEI', _tienda:'Efectivo (tienda)' }[metodoActivo] || metodoActivo;
+
+    /* Avisos: lo que cambia respecto a hoy. */
+    var av = [];
+    if (esActual) {
+      av.push('Estás <b>renovando tu plan actual</b>: los días que te queden se suman al nuevo periodo.');
+    } else {
+      av.push('Estás <b>cambiando de plan</b>: el cobro aplica desde ahora y reemplaza al anterior.');
+    }
+    if (metodoActivo === '_spei') {
+      av.push('Se te dará la <b>CLABE y la referencia</b> al confirmar. El plan se activa cuando validemos la transferencia.');
+    } else if (metodoActivo === '_tienda') {
+      av.push('El pago en efectivo se registra en tienda. El plan se activa al validar el comprobante.');
+    } else {
+      av.push('Se procesará el <b>cargo a la tarjeta</b> en cuanto confirmes.');
+    }
+
+    document.getElementById('confAvisos').innerHTML =
+      av.map(function(a){ return '<p>' + a + '</p>'; }).join('');
+
+    /* Items: aquí solo hay una línea, el plan. */
+    document.getElementById('confItems').innerHTML =
+      '<li><span>' + esc(nombrePlan) + ' · ' + esc(etiquetaPeriodo) + '</span>' +
+      '<b class="lf-mono">' + money(total) + '</b></li>';
+
+    document.getElementById('confTotal').innerHTML =
+      '<span>Total</span><b class="lf-mono">' + money(total) + '</b>';
+
+    /* Resumen */
+    var filas = [
+      ['Plan',     esc(nombrePlan)],
+      ['Periodo',  esc(etiquetaPeriodo)],
+      ['Paga con', esc(etiquetaMetodo)],
+    ];
+    document.getElementById('confDatos').innerHTML = filas.map(function (fi) {
+      return '<div><dt>' + fi[0] + '</dt><dd>' + fi[1] + '</dd></div>';
+    }).join('');
+
+    /* Texto del botón según método. */
+    var cOk = document.getElementById('cOk');
+    if (metodoActivo === '_spei')        cOk.textContent = 'Confirmar y ver datos de transferencia';
+    else if (metodoActivo === '_tienda') cOk.textContent = 'Confirmar y generar referencia';
+    else                                 cOk.textContent = 'Confirmar y pagar';
+  }
+
+  /* --- Volver al paso 1 --- */
+  document.getElementById('cVolver').addEventListener('click', function () {
+    mostrarVista('metodo');
+    var b = vistaMetodo.querySelector('.m[data-metodo="' + metodoActivo + '"]');
+    if (b) b.focus();
+  });
+
+  /* --- Confirmar y enviar --- */
+  document.getElementById('cOk').addEventListener('click', function () {
+    if (!formActivo || !metodoActivo) return;
+    var campo = formActivo.querySelector('.lf-como-paga');
+    if (campo) campo.value = metodoActivo;
+    formActivo.dataset.listo = '1';
+    formActivo.submit();
+  });
+
+  /* --- Utilidades --- */
+  function money(n) {
+    return '$' + Number(n).toLocaleString('es-MX', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  }
+  function esc(s) {
+    return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) {
+      return { '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;' }[c];
+    });
+  }
 })();
 </script>
 
@@ -487,10 +716,6 @@ $grupos = [
     <section class="card">
       <header class="card-header"><?= P::e($g[0]) ?></header>
       <div class="card-body">
-        <?php /* Rejilla, no flex: con flex los campos angostos se encogían
-                 debajo de su mínimo y se encimaban (Celular, Oficina,
-                 Interior, Colonia). Aquí cada campo ocupa su columna y los
-                 anchos (peso >= 2) abarcan dos. */ ?>
         <div class="lf-form-g">
           <?php foreach ($g[1] as $campo):
             $k = $campo[0]; $tipo = $campo[4] ?? 'text'; ?>
@@ -638,8 +863,6 @@ $grupos = [
       .then(function (r) { return r.json(); })
       .then(function (j) {
         if (!j.ok) { btn.disabled = false; btn.textContent = txt; msj(j.texto, false); return; }
-        /* Se trae la página otra vez, pero solo se cambia esta tarjeta y
-           el resumen de arriba. */
         return fetch('/cuenta?t=documentos', { credentials: 'same-origin',
                                                headers: { 'X-LF-Parcial': '1' } })
           .then(function (r) { return r.text(); })
