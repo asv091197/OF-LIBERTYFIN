@@ -59,30 +59,37 @@ $token = $_SESSION['lf_token'];
         <span><b id="servPag">1</b> de <b id="servTot">1</b></span>
         <button type="button" id="servSig" aria-label="Siguiente">&rsaquo;</button>
       </div>
-      <form class="lf-search" method="get" style="max-width:240px">
+      <form class="lf-search" method="get" style="max-width:240px" id="formBuscaCat">
         <?= W::icono('buscar','15px') ?>
-        <input type="search" name="q" value="<?= P::e($buscar) ?>" placeholder="Nombre o código">
+        <input type="search" name="q" id="buscaCat" value="<?= P::e($buscar) ?>" placeholder="Nombre o código"
+               autocomplete="off">
         <?php if ($area): ?><input type="hidden" name="area" value="<?= P::e($area) ?>"><?php endif; ?>
       </form>
     </header>
 
     <div class="lf-cat-fila">
-      <a class="lf-pill <?= $area === '' ? 'active' : '' ?>" href="/caja<?= $buscar ? '?q='.urlencode($buscar) : '' ?>">Todos</a>
+      <?php /* Los enlaces siguen siendo enlaces (sin JavaScript funcionan), pero
+               con JavaScript solo filtran la rejilla: no recargan y el ticket
+               se queda como está. */ ?>
+      <a class="lf-pill <?= $area === '' ? 'active' : '' ?>" data-area=""
+         href="/caja<?= $buscar ? '?q='.urlencode($buscar) : '' ?>">Todos</a>
       <?php foreach ($areas as $a): ?>
         <a class="lf-pill <?= (string)$area === (string)$a['id'] ? 'active' : '' ?>"
+           data-area="<?= (int)$a['id'] ?>"
            href="/caja?area=<?= (int)$a['id'] ?><?= $buscar ? '&q='.urlencode($buscar) : '' ?>">
           <?= P::e($a['nombre']) ?></a>
       <?php endforeach; ?>
     </div>
 
     <div class="lf-grid-serv">
-      <?php if (!$servicios): ?>
-        <p style="grid-column:1/-1;text-align:center;color:var(--lf-tinta-4);padding:30px;font-size:13px">
-          No hay productos que coincidan.</p>
-      <?php endif; ?>
+      <p id="catVacio" <?= $servicios ? 'hidden' : '' ?>
+         style="grid-column:1/-1;text-align:center;color:var(--lf-tinta-4);padding:30px;font-size:13px">
+        No hay productos que coincidan.</p>
       <?php foreach ($servicios as $s): ?>
         <button type="button" class="lf-serv<?= (float)$s['precio'] <= 0 ? ' sin-precio' : '' ?>"
                 data-id="<?= (int)$s['id'] ?>"
+                data-area="<?= (int)($s['categoria_id'] ?? 0) ?>"
+                data-b="<?= P::e(mb_strtolower($s['nombre'] . ' ' . $s['codigo'])) ?>"
                 data-nombre="<?= P::e($s['nombre']) ?>"
                 title="<?= P::e($s['nombre']) ?>"
                 data-precio="<?= (float)$s['precio'] ?>">
@@ -150,9 +157,34 @@ $token = $_SESSION['lf_token'];
     <div style="padding:0 20px 12px">
       <div class="lf-search">
         <?= W::icono('cliente','15px') ?>
-        <input type="text" id="buscaCliente" placeholder="Cliente (opcional)" autocomplete="off">
+        <?php /* `name="cliente_nombre"`: si el nombre NO se eligió de la lista,
+                 el servidor lo busca por nombre exacto o crea el cliente.
+                 Antes ese texto se perdía y la venta salía sin cliente. */ ?>
+        <input type="text" id="buscaCliente" name="cliente_nombre" maxlength="150"
+               placeholder="Cliente (opcional)" autocomplete="off">
       </div>
       <div id="sugerencias" class="lf-sugerencias" hidden></div>
+      <p style="font-size:11px;color:var(--lf-tinta-4);margin:6px 2px 0;line-height:1.4">
+        Elígelo de la lista o escribe su nombre: si no existe, se crea al cobrar.</p>
+    </div>
+
+    <?php /* Quién va a hacer el trabajo, no quién cobra. De aquí sale a quién
+             se le asigna la comisión: sin esto toda venta queda "POR ASIGNAR". */ ?>
+    <div style="padding:0 20px 12px">
+      <label class="form-label" for="selEspecialista">Especialista asignado</label>
+      <select class="form-select form-select-sm" name="especialista" id="selEspecialista">
+        <option value="">Sin asignar</option>
+        <?php foreach (($equipo ?? []) as $nombreArea => $gente): ?>
+          <optgroup label="<?= P::e($nombreArea) ?>">
+            <?php foreach ($gente as $c): ?>
+              <option value="<?= (int)$c['id'] ?>"><?= P::e($c['nombre']) ?></option>
+            <?php endforeach; ?>
+          </optgroup>
+        <?php endforeach; ?>
+      </select>
+      <label class="form-label" for="descVenta" style="margin-top:12px">Descripción <small style="font-weight:400;color:var(--lf-tinta-4)">(opcional)</small></label>
+      <textarea class="form-control lf-desc" name="descripcion" id="descVenta" rows="2"
+                placeholder="Qué se vendió, condiciones, referencias…"></textarea>
     </div>
 
     <div id="lista"></div>
@@ -182,7 +214,6 @@ $token = $_SESSION['lf_token'];
       <p id="msgSaldo">Deja el total para liquidar de una vez.</p>
     </div>
 
-    <div style="padding:0 20px 14px;display:flex;gap:8px;flex-wrap:wrap">
       <?php
       // Solo lo que esta empresa puede cobrar. Ofrecer tarjeta a quien
       // la tiene apagada hace que el cajero la elija y la venta falle al
@@ -192,14 +223,22 @@ $token = $_SESSION['lf_token'];
        mostrador con los de linea. Con tantos botones el cajero tiene
        que leerlos cada vez en vez de dar al de siempre. */
     $opciones = [
-        ['id'=>'efectivo', 'rotulo'=>'Efectivo',          'icono'=>'caja',  'linea'=>''],
-        ['id'=>'_tarjeta', 'rotulo'=>'Tarjeta',           'icono'=>'cobro', 'linea'=>'tarjeta'],
-        ['id'=>'_spei',    'rotulo'=>'SPEI',              'icono'=>'venta', 'linea'=>'spei'],
-        ['id'=>'_tienda',  'rotulo'=>'Efectivo (tienda)', 'icono'=>'bolsa', 'linea'=>'efectivo'],
+        ['id'=>'efectivo', 'rotulo'=>'Efectivo', 'icono'=>'caja', 'linea'=>''],
     ];
-    // Los de linea solo si el proveedor esta configurado; si no, el
-    // boton promete algo que va a fallar.
-    if (!$ligas) $opciones = [$opciones[0]];
+    // Tarjeta y SPEI (transferencia) se ofrecen si hay proveedor para
+    // generar la liga, O si el método está encendido: en ese caso se cobra
+    // marcando "Ya me pagaron", que no genera ninguna liga. Efectivo en
+    // tienda siempre necesita el proveedor.
+    $mets = $metodos ?? [];
+    if ($ligas || in_array('tarjeta', $mets, true)) {
+        $opciones[] = ['id'=>'_tarjeta', 'rotulo'=>'Tarjeta', 'icono'=>'cobro', 'linea'=>'tarjeta'];
+    }
+    if ($ligas || in_array('transferencia', $mets, true)) {
+        $opciones[] = ['id'=>'_spei', 'rotulo'=>'SPEI', 'icono'=>'venta', 'linea'=>'spei'];
+    }
+    if ($ligas) {
+        $opciones[] = ['id'=>'_tienda', 'rotulo'=>'Efectivo (tienda)', 'icono'=>'bolsa', 'linea'=>'efectivo'];
+    }
     ?>
     <div class="lf-metodos">
       <label class="form-label">¿Cómo paga?</label>
@@ -214,6 +253,24 @@ $token = $_SESSION['lf_token'];
       </div>
       <input type="hidden" name="como_paga" id="comoPaga"
              value="<?= P::e($opciones[0]['id'] ?? 'efectivo') ?>">
+    </div>
+
+    <?php /* Solo con Tarjeta, SPEI o Efectivo (tienda), que normalmente
+             generan una liga. Marcado: NO se genera y el cobro pasa como
+             pagado, para cuando el cliente ya transfirió o pagó por otro
+             lado. Sin proveedor configurado es la única opción, así que
+             va marcado. */ ?>
+    <div class="lf-sinliga" id="cajaSinLiga" hidden>
+      <label>
+        <input type="checkbox" name="sin_liga" id="sinLiga" value="1" <?= $ligas ? '' : 'checked' ?>>
+        <span><b>Ya me pagaron</b> — no generar liga de pago
+          <small>El cobro se registra como pagado en este momento.</small></span>
+      </label>
+      <div class="ref" id="cajaRef" hidden>
+        <label for="refTransf">Referencia o clave de rastreo <small>(opcional)</small></label>
+        <input class="form-control lf-mono" type="text" name="referencia" id="refTransf"
+               maxlength="60" autocomplete="off" placeholder="Para cuadrar el depósito después">
+      </div>
     </div>
 
 
@@ -302,6 +359,7 @@ $token = $_SESSION['lf_token'];
     if (pagaCon)  pagaCon.hidden  = true;
     if (anticipo) anticipo.hidden = true;
     if (metodos)  metodos.hidden  = true;
+    var sinl = document.getElementById('cajaSinLiga'); if (sinl) sinl.hidden = true;
     refrescarBoton();
   }
 
@@ -389,6 +447,16 @@ $token = $_SESSION['lf_token'];
     $('sIva').textContent = pesos(iva);
     $('sTot').textContent = pesos(cap);
 
+    /* "Ya me pagaron": con un método de liga, marcado = NO se genera la
+       liga y el cobro pasa como pagado. Entonces el anticipo es lo que
+       entró, y por defecto es el total: así cobrar completo no obliga a
+       escribir nada. Si el cajero lo cambia a mano, se respeta. */
+    var act = document.querySelector('.lf-metodos .m.on');
+    var esLinea = !!(act && act.dataset.linea);
+    var sl = $('sinLiga');
+    var omitir = esLinea && sl && sl.checked;
+    if (omitir && !$('anticipo').dataset.manual) $('anticipo').value = cap.toFixed(2);
+
     var ant = parseFloat($('anticipo').value) || 0;
     if (ant > cap) { $('anticipo').value = cap.toFixed(2); ant = cap; }
     var saldo = cap - ant;
@@ -396,8 +464,7 @@ $token = $_SESSION['lf_token'];
       ? 'Se liquida completa. La comisión se libera toda.'
       : 'Queda un saldo de <b class="lf-mono" style="color:var(--lf-amb)">' + pesos(saldo)
         + '</b>. La comisión se libera conforme el cliente pague.';
-    var act = document.querySelector('.lf-metodos .m.on');
-    var enLinea = act && act.dataset.linea;
+    var enLinea = esLinea && !omitir;
     $('btnTexto').textContent = enLinea
       ? 'Cobrar ' + pesos(cap)
       : (ant > 0 ? 'Cobrar ' + pesos(ant) : 'Registrar sin cobro');
@@ -406,35 +473,112 @@ $token = $_SESSION['lf_token'];
     $('btnCobrar').disabled = lineas.length === 0;
   }
 
-  // Paginación de la rejilla: 21 por página, sin recargar. Con el catálogo
-  // completo a la vista la columna crece tanto que el ticket queda perdido
-  // al fondo de la pantalla.
+  /* ══════════════════════════════════════════════════════
+     CATÁLOGO: CATEGORÍA, BÚSQUEDA Y PÁGINAS, SIN RECARGAR
+     Antes cada categoría era una página nueva y el ticket que se iba
+     armando se perdía. Ahora todas las tarjetas ya están en la página y
+     aquí solo se muestran u ocultan; el ticket ni se entera.
+     Las 21 por página se conservan: con el catálogo completo a la vista
+     el ticket quedaría perdido al fondo de la pantalla.
+     ══════════════════════════════════════════════════════ */
   (function(){
     var POR_PAG = 21;
-    var tarjetas = Array.prototype.slice.call(document.querySelectorAll('.lf-serv'));
-    var totalPag = Math.ceil(tarjetas.length / POR_PAG) || 1;
-    var actual = 1;
-    var caja = $('pagServ');
-    if (totalPag <= 1) { if (caja) caja.hidden = true; return; }
-    caja.hidden = false;
-    $('servTot').textContent = totalPag;
-    function pinta(){
-      tarjetas.forEach(function(t, i){
-        t.style.display = (i >= (actual-1)*POR_PAG && i < actual*POR_PAG) ? '' : 'none';
+    var todas = Array.prototype.slice.call(document.querySelectorAll('.lf-serv'));
+    var area = <?= json_encode((string)$area) ?>;
+    var q = <?= json_encode(mb_strtolower(trim((string)$buscar))) ?>;
+    var actual = 1, visibles = [];
+    var caja = $('pagServ'), vacio = $('catVacio'), campoQ = $('buscaCat');
+
+    function filtrar(){
+      visibles = todas.filter(function(t){
+        return (area === '' || t.dataset.area === area)
+            && (q === '' || (t.dataset.b || '').indexOf(q) !== -1);
       });
-      $('servPag').textContent = actual;
-      $('servAnt').disabled = actual === 1;
-      $('servSig').disabled = actual === totalPag;
+      actual = 1;
+      pinta();
     }
+    function pinta(){
+      var total = Math.max(1, Math.ceil(visibles.length / POR_PAG));
+      if (actual > total) actual = total;
+      todas.forEach(function(t){ t.style.display = 'none'; });
+      visibles.slice((actual-1)*POR_PAG, actual*POR_PAG)
+              .forEach(function(t){ t.style.display = ''; });
+      if (vacio) vacio.hidden = visibles.length > 0;
+      if (caja) caja.hidden = total <= 1;
+      $('servPag').textContent = actual;
+      $('servTot').textContent = total;
+      $('servAnt').disabled = actual === 1;
+      $('servSig').disabled = actual === total;
+    }
+    /* La dirección se mantiene al día para poder recargar o compartir,
+       pero sin recargar ahora. */
+    function direccion(){
+      var p = [];
+      if (area !== '') p.push('area=' + encodeURIComponent(area));
+      if (q !== '') p.push('q=' + encodeURIComponent(campoQ ? campoQ.value.trim() : q));
+      try { history.replaceState(history.state, '', '/caja' + (p.length ? '?' + p.join('&') : '')); }
+      catch (e) {}
+    }
+
     $('servAnt').addEventListener('click', function(){ if (actual>1){ actual--; pinta(); } });
-    $('servSig').addEventListener('click', function(){ if (actual<totalPag){ actual++; pinta(); } });
-    pinta();
+    $('servSig').addEventListener('click', function(){
+      if (actual < Math.ceil(visibles.length / POR_PAG)){ actual++; pinta(); } });
+
+    /* Categorías. preventDefault ANTES de que el navegador de secciones
+       del armazón vea el clic: si no, pediría la página entera. */
+    var fila = document.querySelector('.lf-cat-fila');
+    if (fila) fila.addEventListener('click', function(ev){
+      var p = ev.target.closest('.lf-pill');
+      if (!p || !fila.contains(p)) return;
+      ev.preventDefault();
+      area = p.dataset.area || '';
+      fila.querySelectorAll('.lf-pill').forEach(function(x){ x.classList.toggle('active', x === p); });
+      filtrar(); direccion();
+    });
+
+    /* Búsqueda: filtra al escribir; Enter ya no recarga. */
+    if (campoQ) {
+      campoQ.addEventListener('input', function(){
+        q = campoQ.value.trim().toLowerCase();
+        filtrar(); direccion();
+      });
+      var fq = $('formBuscaCat');
+      if (fq) fq.addEventListener('submit', function(ev){ ev.preventDefault(); });
+    }
+
+    filtrar();
   })();
 
   /* Los botones de método. El texto del botón de cobrar cambia según
      el elegido: con el mismo texto, el cajero cree que ya cobró cuando
      el cliente se va a pagar a otro lado. */
   (function(){
+    /* Qué se ve según el método y "Ya me pagaron":
+         · método de liga SIN marcar → no hay anticipo (el cliente todavía no
+           pagó; anotarlo dejaría la venta liquidada sin que entre un peso)
+         · método de liga CON "Ya me pagaron" → sin liga, anticipo = total,
+           y aparece la referencia para cuadrar el depósito
+         · efectivo → como siempre */
+    function aplicarSinLiga(){
+      var act = document.querySelector('.lf-metodos .m.on');
+      var linea = !!(act && act.dataset.linea);
+      var wrap = $('cajaSinLiga'), sl = $('sinLiga'), rf = $('cajaRef'), caja = $('cajaAnticipo');
+      if (wrap) wrap.hidden = !linea;
+      var omitir = linea && sl && sl.checked;
+      if (caja) caja.hidden = linea && !omitir;
+      if (rf) { rf.hidden = !omitir; if (rf.hidden) $('refTransf').value = ''; }
+      if (linea && !omitir) { $('anticipo').dataset.manual = ''; $('anticipo').value = '0'; }
+      calcular();
+    }
+    /* Al soltar una venta ampliada se vuelve a decidir qué se ve. */
+    document.addEventListener('lf:ticket-cambio', aplicarSinLiga);
+    if ($('sinLiga')) $('sinLiga').addEventListener('change', function(){
+      $('anticipo').dataset.manual = '';
+      aplicarSinLiga();
+    });
+    /* Si el cajero escribe un anticipo a mano, deja de seguir al total. */
+    $('anticipo').addEventListener('input', function(){ this.dataset.manual = '1'; });
+
     document.querySelectorAll('.lf-metodos .m').forEach(function(b){
       b.addEventListener('click', function(){
         document.querySelectorAll('.lf-metodos .m').forEach(function(x){
@@ -445,12 +589,9 @@ $token = $_SESSION['lf_token'];
            no ha pagado nada. Dejarlo a la vista invita a escribir ahí el
            total y entonces la venta queda liquidada sin que haya entrado
            un peso. */
-        var caja = $('cajaAnticipo');
-        var linea = !!b.dataset.linea;
-        if (caja) {
-          caja.hidden = linea;
-          if (linea) $('anticipo').value = '0';
-        }
+        $('anticipo').dataset.manual = '';
+        $('anticipo').value = '0';
+        aplicarSinLiga();
         /* "Paga con" solo tiene sentido en efectivo: en una
            transferencia nadie entrega cambio. */
         var pc = $('cajaPagaCon');
@@ -551,9 +692,131 @@ $token = $_SESSION['lf_token'];
     }, 220);
   });
 
+  /* ══════════════════════════════════════════════════════
+     EL TICKET SOBREVIVE AL CAMBIO DE CATEGORÍA
+     Las categorías de arriba son enlaces: cambiar de una a otra carga
+     la pantalla otra vez y el ticket —productos, precios, IVA, cliente,
+     método— se borraba. Se guarda en la pestaña (sessionStorage) cada vez
+     que algo cambia y se restaura al cargar. Se borra al cobrar con
+     éxito, para que la siguiente venta empiece limpia.
+     ══════════════════════════════════════════════════════ */
+  var CLAVE_TICKET = 'lf-caja-ticket';
+  var ticketListo = false;     // no se guarda nada antes de restaurar
+  var ticketCerrado = false;   // ya se cobró: no se vuelve a guardar
+
+  window.lfGuardarTicket = function(){
+    if (!ticketListo || ticketCerrado) return;
+    try {
+      sessionStorage.setItem(CLAVE_TICKET, JSON.stringify({
+        lineas: lineas,
+        iva: $('ivaPct').value, gastos: $('gastos').value,
+        anticipo: $('anticipo').value, manual: $('anticipo').dataset.manual || '',
+        clienteId: $('cliente_id').value, cliente: $('buscaCliente').value,
+        esp: $('selEspecialista') ? $('selEspecialista').value : '',
+        desc: $('descVenta') ? $('descVenta').value : '',
+        metodo: $('comoPaga').value,
+        sinLiga: $('sinLiga') ? $('sinLiga').checked : null,
+        ref: $('refTransf') ? $('refTransf').value : ''
+      }));
+    } catch (e) { /* sin sessionStorage se opera igual, solo que sin guardar */ }
+  };
+
+  /* Lo que se va a registrar, leído de la pantalla, para el resumen de
+     confirmación. */
+  window.lfResumenTicket = function(){
+    var cap = lineas.reduce(function(a,l){ return a + l.precio*l.cantidad; }, 0);
+    var ant = parseFloat($('anticipo').value) || 0;
+    if (ant > cap) ant = cap;
+    var act = document.querySelector('.lf-metodos .m.on');
+    var esLinea = !!(act && act.dataset.linea);
+    var sl = $('sinLiga');
+    var se = $('selEspecialista');
+    var v = window.lfVentaElegida && window.lfVentaElegida();
+    return {
+      lineas: lineas.map(function(l){ return {nombre:l.nombre, cantidad:l.cantidad, precio:l.precio}; }),
+      total: cap, anticipo: ant, saldo: cap - ant,
+      liga: esLinea && !(sl && sl.checked),
+      metodo: act ? act.textContent.trim() : 'Efectivo',
+      cliente: ($('buscaCliente').value || '').trim(),
+      esp: (se && se.value) ? se.options[se.selectedIndex].text : '',
+      ampliar: v ? v.folio : ''
+    };
+  };
+
+  /* Venta cobrada: se olvida el ticket y no se vuelve a guardar. */
+  window.lfTicketCobrado = function(){
+    ticketCerrado = true;
+    try { sessionStorage.removeItem(CLAVE_TICKET); } catch (e) {}
+  };
+
+  function restaurarTicket(){
+    var g = null;
+    try {
+      /* Si se acaba de cobrar (?ok=…), el ticket de antes ya no vale. */
+      if (/[?&]ok=/.test(location.search)) { sessionStorage.removeItem(CLAVE_TICKET); }
+      else g = JSON.parse(sessionStorage.getItem(CLAVE_TICKET) || 'null');
+    } catch (e) { g = null; }
+
+    if (g && g.lineas && g.lineas.length) {
+      lineas = g.lineas.map(function(l){
+        return {id:l.id, nombre:l.nombre, precio:+l.precio, cantidad:+l.cantidad || 1};
+      });
+      $('ivaPct').value = g.iva;
+      $('gastos').value = g.gastos;
+      $('cliente_id').value = g.clienteId || '';
+      $('buscaCliente').value = g.cliente || '';
+      if ($('selEspecialista')) $('selEspecialista').value = g.esp || '';
+      if ($('descVenta')) $('descVenta').value = g.desc || '';
+
+      /* El método: se "toca" su botón para que todo lo que depende de él
+         (anticipo, casilla de "Ya me pagaron", referencia) se acomode. */
+      var bm = document.querySelector('.lf-metodos .m[data-metodo="' + (g.metodo || '') + '"]');
+      if (bm) bm.click();
+      if ($('sinLiga') && g.sinLiga !== null) $('sinLiga').checked = !!g.sinLiga;
+      if ($('refTransf')) $('refTransf').value = g.ref || '';
+      $('anticipo').value = g.anticipo;
+      $('anticipo').dataset.manual = g.manual || '';
+      if ($('sinLiga')) $('sinLiga').dispatchEvent(new Event('change'));
+      /* `change` en la casilla reinicia el anticipo; se vuelve a poner. */
+      $('anticipo').value = g.anticipo;
+      $('anticipo').dataset.manual = g.manual || '';
+    }
+    ticketListo = true;
+  }
+
+  /* Cualquier cambio en el formulario guarda el ticket. */
+  ['ticket'].forEach(function(id){
+    var fm = $(id);
+    if (!fm) return;
+    fm.addEventListener('input',  function(){ window.lfGuardarTicket(); });
+    fm.addEventListener('change', function(){ window.lfGuardarTicket(); });
+    fm.addEventListener('click',  function(){ setTimeout(window.lfGuardarTicket, 0); });
+  });
+  /* Y siempre que se recalcula (agregar, quitar, cambiar un precio). */
+  document.addEventListener('lf-recalcular', function(){ window.lfGuardarTicket(); });
+
+  restaurarTicket();
   pintar();
 })();
 </script>
+
+<?php /* ═══════════ CONFIRMAR ANTES DE REGISTRAR ═══════════ */ ?>
+<div class="lf-modal" id="modalConfirma" hidden>
+  <div class="caja" role="dialog" aria-modal="true" aria-labelledby="cTitulo">
+    <header>
+      <div>
+        <h2 id="cTitulo">Revisa antes de registrar</h2>
+        <p>Una vez registrada, la venta no puede eliminarse. Cualquier cancelación requiere un proceso adicional.</p>
+      </div>
+      <button type="button" class="cerrar" id="cCerrar" aria-label="Cerrar">&times;</button>
+    </header>
+    <div class="cuerpo" id="cCuerpo"></div>
+    <footer>
+      <button type="button" class="btn btn-secondary" id="cVolver">Revisar</button>
+      <button type="button" class="btn btn-primary" id="cOk">Confirmar y registrar</button>
+    </footer>
+  </div>
+</div>
 
 <?php /* ═══════════ EL MODAL DE COBRO ═══════════ */ ?>
 <div class="lf-modal" id="modalCobro" hidden>
@@ -578,7 +841,11 @@ $token = $_SESSION['lf_token'];
       titulo = document.getElementById('mTitulo'),
       sub    = document.getElementById('mSub'),
       pie    = document.getElementById('mPie'),
-      form   = document.getElementById('formCobro') || document.querySelector('form.lf-pos, form'),
+      /* El formulario del TICKET, por su id. Antes se tomaba el primer
+         <form> de la página, que en Caja es el buscador del catálogo: el
+         cobro nunca se enviaba por detrás, el modal no abría y la liga
+         salía como un bloque arriba de la página. */
+      form   = document.getElementById('ticket'),
       reloj  = null;
 
   function abrir(){ modal.hidden = false; document.body.classList.add('lf-modal-abierto'); }
@@ -671,22 +938,23 @@ $token = $_SESSION['lf_token'];
        el modo que se pidio es el que llego. */
     var aviso = '';
 
-    if (modo === 'tarjeta') {
-      titulo.textContent = 'Pago con tarjeta';
-      cuerpo.innerHTML =
-        '<p class="msg">Que escanee el código con su teléfono, o ábrele la página '
-        + 'para que capture los datos de su tarjeta.</p>'
-        + '<div class="qr" id="mQr"></div>'
-        + copiable(l.liga, 'mLiga')
-        + '<div class="espera" id="mEspera"><span class="giro"></span>'
-        + 'Esperando a que pague. Esto se actualiza solo.</div>' + aviso;
-      cargarQr(l.liga);
-      pie.innerHTML = '<a class="btn btn-secondary" href="' + esc(l.liga)
-        + '" target="_blank" rel="noopener">Abrir la página</a>' + confirmar(l)
-        + '<button type="button" class="btn btn-primary" data-seguir>Siguiente venta</button>';
-      vigilar(l.id);
-
-    } else if (modo === 'spei') {
+ if (modo === 'tarjeta') {
+    titulo.textContent = 'Pago con tarjeta';
+    cuerpo.innerHTML =
+      '<p class="msg">Que escanee el código con su teléfono, o ábrele la página '
+      + 'para que capture los datos de su tarjeta.</p>'
+      // El SVG viene ya en `l.qr`. Meterlo tal cual evita el segundo
+      // viaje a /caja/qr, que Mod_Security cortaba al ver una dirección
+      // dentro de la cadena de consulta, y que dejaba el <img> roto.
+      + '<div class="qr" id="mQr">' + (l.qr || '') + '</div>'
+      + copiable(l.liga, 'mLiga')
+      + '<div class="espera" id="mEspera"><span class="giro"></span>'
+      + 'Esperando a que pague. Esto se actualiza solo.</div>' + aviso;
+    pie.innerHTML = '<a class="btn btn-secondary" href="' + esc(l.liga)
+      + '" target="_blank" rel="noopener">Abrir la página</a>' + confirmar(l)
+      + '<button type="button" class="btn btn-primary" data-seguir>Siguiente venta</button>';
+    vigilar(l.id);
+  } else if (modo === 'spei') {
       titulo.textContent = 'Transferencia SPEI';
       cuerpo.innerHTML =
         '<p class="msg">Que transfiera desde su banco a esta CLABE, por '
@@ -717,15 +985,11 @@ $token = $_SESSION['lf_token'];
 
   /* El QR se pide al servidor, que ya sabe dibujarlo. Meter un generador
      en el navegador sería repetir trescientas líneas que ya existen. */
-  function cargarQr(url){
-    var c = document.getElementById('mQr');
-    if (!c) return;
-    c.innerHTML = '<span class="giro"></span>';
-    fetch('/qr?t=' + encodeURIComponent(url), { credentials:'same-origin' })
-      .then(function(r){ return r.text(); })
-      .then(function(svg){ c.innerHTML = svg; })
-      .catch(function(){ c.innerHTML = ''; });
-  }
+function cargarQr(l) {
+  document.getElementById('mQr').innerHTML =
+    '<img src="/caja/qr?liga=' + encodeURIComponent(l.id) + '"'
+    + ' width="190" height="190" alt="Código QR">';
+}
 
   document.addEventListener('click', function(e){
     var c = e.target.closest('[data-copia]');
@@ -763,20 +1027,27 @@ $token = $_SESSION['lf_token'];
     }
   });
 
-  /* El envío ya no recarga: se manda, se recibe y se abre el modal. */
-  if (form) form.addEventListener('submit', function(ev){
-    ev.preventDefault();
+  /* El envío ya no recarga: se manda, se recibe y se abre el modal.
+     Esta función es el envío de verdad; solo se llega aquí DESPUÉS de la
+     confirmación (ver más abajo). */
+  function enviar(){
     var btn = document.getElementById('btnCobrar');
     if (btn) { btn.disabled = true; btn.classList.add('cargando'); }
 
     var datos = new FormData(form);
     datos.append('json', '1');
+    var recibido = false;   // ¿ya contestó el servidor? Si sí, la venta YA existe.
     fetch(form.action, { method:'POST', body:datos,
                          headers:{'Accept':'application/json'}, credentials:'same-origin' })
       .then(function(r){ return r.json(); })
       .then(function(d){
+        recibido = true;
         if (btn) { btn.disabled = false; btn.classList.remove('cargando'); }
         if (!d.ok) { alert(d.error || 'No se pudo cobrar.'); return; }
+
+        /* La venta ya existe: el ticket guardado en la pestaña ya no vale,
+           o la siguiente venta arrancaría con los mismos productos. */
+        if (window.lfTicketCobrado) window.lfTicketCobrado();
 
         /* SE AGREGO A UNA VENTA QUE YA EXISTIA.
            No hay nada que cobrar aqui —se abrio saldo— asi que no hay
@@ -800,10 +1071,112 @@ $token = $_SESSION['lf_token'];
       })
       .catch(function(){
         if (btn) { btn.disabled = false; btn.classList.remove('cargando'); }
-        /* Si algo falla se manda como siempre, para no dejar al cajero
-           sin poder cobrar porque el JavaScript tuvo un mal día. */
+        /* Si falló la CONEXIÓN, se manda como siempre para no dejar al
+           cajero sin poder cobrar. Pero si el servidor ya contestó, la
+           venta YA se registró y el error fue al mostrarla: reenviar el
+           formulario crearía una segunda venta. */
+        if (recibido) {
+          alert('La venta se registró, pero hubo un problema al mostrar el cobro. '
+              + 'Revísala en Ventas y no la cobres otra vez.');
+          return;
+        }
         form.submit();
       });
-  });
+  }
+
+  /* ══════════════════════════════════════════════════════
+     CONFIRMAR ANTES DE REGISTRAR
+     Un Enter de más, o un toque sin querer, registraba una venta a medias
+     —sin cliente, sin especialista, con saldo— y deshacerla es trabajo
+     aparte. Ahora:
+       · Enter dentro de un campo ya NO envía el formulario;
+       · enviar abre un resumen y avisa de lo que falta;
+       · el foco cae en "Revisar", no en "Confirmar": un segundo Enter
+         seguido tampoco la registra.
+     ══════════════════════════════════════════════════════ */
+  var conf = document.getElementById('modalConfirma');
+  var confCuerpo = document.getElementById('cCuerpo');
+  var pendiente = null;
+
+  function cerrarConf(){
+    conf.hidden = true;
+    document.body.classList.remove('lf-modal-abierto');
+    pendiente = null;
+  }
+
+  function abrirConf(r){
+    var av = [];
+    if (!r.ampliar) {
+      if (!r.cliente) av.push('No elegiste cliente: la venta saldrá como <b>Público general</b>.');
+      if (!r.esp)     av.push('Sin <b>especialista</b>: la comisión quedará por asignar.');
+      if (!r.liga && r.saldo > 0.009)
+        av.push('Quedará un <b>saldo de ' + money(r.saldo) + '</b> por cobrar.');
+      if (!r.liga && r.anticipo <= 0)
+        av.push('<b>No se cobra nada hoy</b>: se registra solo la venta.');
+    }
+    var items = r.lineas.slice(0, 5).map(function(l){
+      return '<li><span>' + (l.cantidad > 1 ? l.cantidad + ' × ' : '') + esc(l.nombre) + '</span>'
+           + '<b class="lf-mono">' + money(l.precio * l.cantidad) + '</b></li>';
+    }).join('');
+    if (r.lineas.length > 5) items += '<li class="mas">y ' + (r.lineas.length - 5) + ' más…</li>';
+
+    var filas = [];
+    if (r.ampliar) {
+      filas.push(['Se agrega a la venta', esc(r.ampliar)]);
+    } else {
+      filas.push(['Cliente', r.cliente ? esc(r.cliente) : '<i>Público general</i>']);
+      filas.push(['Especialista', r.esp ? esc(r.esp) : '<i>Sin asignar</i>']);
+      filas.push(['Paga con', esc(r.metodo)]);
+      filas.push(r.liga ? ['Se genera una liga por', '<b class="lf-mono">' + money(r.total) + '</b>']
+                        : ['Se cobra hoy', '<b class="lf-mono">' + money(r.anticipo) + '</b>']);
+      if (!r.liga && r.saldo > 0.009) filas.push(['Saldo', '<b class="lf-mono">' + money(r.saldo) + '</b>']);
+    }
+
+    confCuerpo.innerHTML =
+        (av.length ? '<div class="lf-conf-av">' + av.map(function(a){ return '<p>' + a + '</p>'; }).join('') + '</div>' : '')
+      + '<ul class="lf-conf-items">' + items + '</ul>'
+      + '<div class="lf-conf-total"><span>Total</span><b class="lf-mono">' + money(r.total) + '</b></div>'
+      + '<dl class="lf-conf-datos">' + filas.map(function(f){
+          return '<div><dt>' + f[0] + '</dt><dd>' + f[1] + '</dd></div>'; }).join('') + '</dl>';
+
+    document.getElementById('cOk').textContent = r.liga ? 'Confirmar y generar liga' : 'Confirmar y registrar';
+    conf.hidden = false;
+    document.body.classList.add('lf-modal-abierto');
+    /* El foco va a "Revisar" a propósito: ver nota arriba. */
+    document.getElementById('cVolver').focus();
+  }
+
+  if (conf) {
+    document.getElementById('cVolver').addEventListener('click', cerrarConf);
+    document.getElementById('cCerrar').addEventListener('click', cerrarConf);
+    conf.addEventListener('click', function(e){ if (e.target === conf) cerrarConf(); });
+    document.getElementById('cOk').addEventListener('click', function(){
+      cerrarConf();
+      enviar();
+    });
+    document.addEventListener('keydown', function(e){
+      if (e.key === 'Escape' && !conf.hidden) cerrarConf();
+    });
+  }
+
+  if (form) {
+    /* Enter dentro de un campo (precio, IVA, anticipo, referencia…) ya no
+       manda el formulario. En un área de texto y en botones sí hace lo
+       suyo: salto de línea, o el clic del botón enfocado. */
+    form.addEventListener('keydown', function(e){
+      if (e.key !== 'Enter') return;
+      var t = e.target;
+      if (t.tagName === 'TEXTAREA' || t.tagName === 'BUTTON') return;
+      e.preventDefault();
+    });
+
+    form.addEventListener('submit', function(ev){
+      ev.preventDefault();
+      if (!conf || !window.lfResumenTicket) { enviar(); return; }   // sin resumen, como antes
+      var r = window.lfResumenTicket();
+      if (!r.lineas.length) return;
+      abrirConf(r);
+    });
+  }
 })();
 </script>

@@ -392,7 +392,6 @@ final class CajaControlador
 
         $api = new \LibertyFin\Servicio\LigaPago(\LibertyFin\Servicio\Integraciones::de('spei'));
 
-       
         $semilla = \LibertyFin\Servicio\LigaPago::semilla((int)$r['id']);
 
         $g = $api->generar([
@@ -451,6 +450,15 @@ final class CajaControlador
                     // devolvio. Sin esto el modal muestra lo que haya y
                     // parece que el boton no sirvio.
                     'falta' => $g['falta'] ?? '',
+                    // El SVG del QR viaja aquí y no se pide después.
+                    //
+                    // Antes el modal armaba un <img src="/caja/qr?t=…"> y
+                    // Mod_Security cortaba esa segunda petición por traer
+                    // una dirección dentro de la cadena de consulta: el
+                    // <img> quedaba roto. La dirección ya la tenemos aquí
+                    // en la mano; dibujarla cuesta lo mismo que servirla
+                    // por otra ruta, y ahorra el viaje.
+                    'qr'    => \LibertyFin\Vista\Qr::svg($liga['liga'], 190),
                 ], 'venta' => ['codigo' => $venta['codigo_venta']]]);
             }
 
@@ -605,24 +613,28 @@ final class CajaControlador
     }
 
     /**
-     * Dibuja un QR. Lo pide el modal de cobro.
+     * Dibuja un QR a partir del id de una liga.
      *
-     * Se hace aqui y no en el navegador porque el generador ya existe en
-     * el servidor: meter otro en JavaScript seria repetir trescientas
-     * lineas que ya estan escritas y probadas.
+     * Por id, no por dirección. Mod_Security bloquea un `https://…`
+     * dentro de la cadena de consulta —lo trata como intento de
+     * inyección—, y además aceptar la dirección y dibujarla tal cual
+     * dejaba esto abierto: cualquiera podía sacar un QR de donde
+     * quisiera. Con el id la dirección sale de la base.
+     *
+     * El modal de Caja ya no pasa por aquí: recibe el SVG dentro del
+     * JSON de `cobrar`. Esta ruta queda para quien la necesite desde
+     * fuera.
      */
     public function qr()
     {
-        $t = (string)(\LibertyFin\Http\Peticion::texto('t', ''));
-        // Solo direcciones nuestras o del proveedor de pago. Dibujar
-        // cualquier texto convertiria esto en un generador abierto que
-        // alguien podria usar para que la pagina sirva un QR a donde el
-        // quiera.
-        if ($t === '' || !preg_match('~^https?://~', $t) || mb_strlen($t) > 213) {
-            http_response_code(400);
-            exit;
-        }
-        $svg = \LibertyFin\Vista\Qr::svg($t, 190);
+        $db = Conexion::de($_SESSION['empresa_db']);
+        $id = (int)Peticion::entero('liga', 0);
+        if ($id <= 0) { http_response_code(400); exit; }
+
+        $l = (new \LibertyFin\Datos\LigaRepo($db))->porId($id);
+        if (!$l || empty($l['liga'])) { http_response_code(404); exit; }
+
+        $svg = \LibertyFin\Vista\Qr::svg($l['liga'], 190);
         if ($svg === null) { http_response_code(400); exit; }
 
         header('Content-Type: image/svg+xml; charset=utf-8');
