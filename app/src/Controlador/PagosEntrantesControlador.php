@@ -441,48 +441,59 @@ final class PagosEntrantesControlador
      *
      * @return array|null  [PDO, fila del cobro]
      */
-    private function ubicar($referencia)
-    {
-        $referencia = preg_replace('/\D/', '', (string)$referencia);
-        if ($referencia === '') return null;
+private function ubicar($referencia)
+{
+    $referencia = preg_replace('/\D/', '', (string)$referencia);
+    if ($referencia === '') return null;
 
-        $principal = null;
-        try {
-            $principal = Conexion::de($GLOBALS['lf_bd_principal'] ?? '');
-        } catch (\Throwable $e) {
-            error_log('[LibertyFin] sin base principal para ubicar cobros');
-        }
-
-        if ($principal) {
-            $ruta = (new RutaLigaRepo($principal))->buscar($referencia);
-            if ($ruta && !empty($ruta['empresa_db'])) {
-                try {
-                    $db = Conexion::de($ruta['empresa_db']);
-                    $l  = (new LigaRepo($db))->porCualquiera($referencia);
-                    if ($l) return [$db, $l];
-                } catch (\Throwable $e) {
-                    error_log('[LibertyFin] abrir ' . $ruta['empresa_db'] . ': ' . $e->getMessage());
-                }
-            }
-        }
-
-        if (!$principal) return null;
-        foreach ((new RutaLigaRepo($principal))->basesDeEmpresas() as $base) {
-            try {
-                $db = Conexion::de($base);
-                $l  = (new LigaRepo($db))->porCualquiera($referencia);
-                if ($l) {
-                    // Se apunta para que la próxima vez sea directa.
-                    (new RutaLigaRepo($principal))->apuntar(
-                        $l['referencia'], $base, null, $l['metodo']);
-                    return [$db, $l];
-                }
-            } catch (\Throwable $e) {
-                continue;   // una base caída no puede tumbar la búsqueda
-            }
-        }
-        return null;
+    $principal = null;
+    try {
+        $principal = Conexion::de($GLOBALS['lf_bd_principal'] ?? '');
+    } catch (\Throwable $e) {
+        error_log('[LibertyFin] sin base principal para ubicar cobros');
     }
+
+    if ($principal) {
+        // 1) Ruta conocida → empresa_db (camino rápido)
+        $ruta = (new RutaLigaRepo($principal))->buscar($referencia);
+        if ($ruta && !empty($ruta['empresa_db'])) {
+            try {
+                $db = Conexion::de($ruta['empresa_db']);
+                $l  = (new LigaRepo($db))->porCualquiera($referencia);
+                if ($l) return [$db, $l];
+            } catch (\Throwable $e) {
+                error_log('[LibertyFin] abrir ' . $ruta['empresa_db'] . ': ' . $e->getMessage());
+            }
+        }
+
+        // 2) NUEVO: la liga puede vivir en la PROPIA base principal
+        //    (empresas sin base dedicada, cobros antiguos, mono-inquilino).
+        try {
+            $l = (new LigaRepo($principal))->porCualquiera($referencia);
+            if ($l) return [$principal, $l];
+        } catch (\Throwable $e) {
+            error_log('[LibertyFin] liga en principal ' . $referencia . ': ' . $e->getMessage());
+        }
+    }
+
+    if (!$principal) return null;
+
+    // 3) Último recurso: recorrer bases de empresas (caro, pero exhaustivo)
+    foreach ((new RutaLigaRepo($principal))->basesDeEmpresas() as $base) {
+        try {
+            $db = Conexion::de($base);
+            $l  = (new LigaRepo($db))->porCualquiera($referencia);
+            if ($l) {
+                (new RutaLigaRepo($principal))->apuntar(
+                    $l['referencia'], $base, null, $l['metodo']);
+                return [$db, $l];
+            }
+        } catch (\Throwable $e) {
+            continue;
+        }
+    }
+    return null;
+}
 
     /**
      * Lo que de verdad se debe.
